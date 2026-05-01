@@ -3,7 +3,7 @@
 [![Platform](https://img.shields.io/badge/Platform-OneBot%20v11%20Reverse%20WS-pink)](#)
 [![Runtime](https://img.shields.io/badge/Python-%3E%3D3.11-blue)](#环境要求)
 
-将 Rocket.Chat 通过桥接方式接入 OneBot v11 生态的独立软件。它继承了插件版 RocketCat 已经验证过的桥接核心、独立 WebUI 和管理能力，但已经不再依附于 AstrBot 插件宿主，而是作为一个可以独立运行、独立配置、独立扩展的本地控制台存在。
+将 [![AstrBot](https://img.shields.io/badge/AstrBot-%3E%3D3.4-blue)](https://github.com/AstrBotDevs/AstrBot) 通过桥接方式接入 OneBot v11 生态的独立客户端。它继承了插件版 RocketCat 已经验证过的桥接核心、独立 WebUI 和管理能力，但已经不再依附于 AstrBot 插件宿主，而是作为一个可以独立运行、独立配置、独立扩展的本地控制台存在。
 
 本项目的目标不是继续做一个“宿主里的桥接插件”，而是把 RocketCat 发展成一套真正独立的 `Rocket.Chat <-> OneBot v11` 桥接软件。
 
