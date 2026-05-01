@@ -436,7 +436,7 @@ logs/
 ---
 
 ## 致谢
--已适配上游[AstrBot](https://github.com/AstrBotDevs/AstrBot)
+- 已适配上游[AstrBot](https://github.com/AstrBotDevs/AstrBot)
 - 插件版 RocketCat 桥接器为当前独立版提供了已验证的桥接核心和 WebUI 设计基础
 - 基础实现参考：[NET-Homeless/astrbot_plugin_rocket_chat_adapter](https://github.com/NET-Homeless/astrbot_plugin_rocket_chat_adapter) `v0.5.3`
 - 与 AstrBot 的 OneBot v11 / aiocqhttp 协同链路为当前桥接路径提供了成熟上游
