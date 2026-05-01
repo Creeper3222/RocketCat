@@ -351,6 +351,9 @@ http://127.0.0.1:5751/
 - 调试日志
 
 ### 4. 如需导入已有配置
+<p align="center">
+  <img src="https://github.com/user-attachments/assets/ba61315c-9273-4f30-a6a0-ac55a19297f1" width="100%" />
+</p>
 
 在 `基础设置` 页点击 `导入配置`，选择已有的 `rocketcat_config.json`。
 
