@@ -328,7 +328,9 @@ http://127.0.0.1:5751/
 首次登录后建议立刻在 `基础设置` 页修改密码。
 
 ### 3. 创建第一个 Bot
-
+<p align="center">
+  <img src="https://github.com/user-attachments/assets/611a6601-0af6-4ebf-ac3c-e301a03631eb" width="100%" />
+</p>
 在 `网络配置` 页点击 `新建 Bot`，为该 Bot 填写：
 
 - Rocket.Chat 服务器地址
