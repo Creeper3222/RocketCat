@@ -58,7 +58,7 @@ AstrBot or other compatible OneBot-side workflow
 - 支持远端媒体下载、大小限制控制、本地临时文件落地和 Base64 媒体上传。
 - 支持 Rocket.Chat 官方 E2EE 私聊 / 私有群组文本与媒体收发。
 - 支持本地插件系统，可发现、启停、重载、卸载本地插件，并在运行时接管 OneBot action。
-- `I Am Thinking` 适配能力已从核心桥接层剥离为本地插件 `rocketcat_plugin_adapt_iamthinking`。
+- [I Am Thinking](https://github.com/sssn-tech/astrbot_plugin_iamthinking) 适配能力已从核心桥接层剥离为本地插件 `rocketcat_plugin_adapt_iamthinking`。
 
 ---
 
