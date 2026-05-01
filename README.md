@@ -135,6 +135,9 @@ RocketCatShell 当前这一版明确不承诺合并转发消息语义。
 ---
 
 ## 独立 WebUI
+<p align="center">
+  <img src="https://github.com/user-attachments/assets/9cd515ce-92f5-4a63-8d8d-8f42d360b836" width="100%" />
+</p>
 
 RocketCatShell 启动后会在本地启动一个独立 WebUI，默认监听 `127.0.0.1`，默认端口 `5751`。
 
@@ -147,6 +150,9 @@ RocketCatShell 启动后会在本地启动一个独立 WebUI，默认监听 `127
 - `插件管理`：管理 RocketCatShell 本地插件，包括启停、设置、重载和卸载。
 
 ### WebUI 认证
+<p align="center">
+  <img src="https://github.com/user-attachments/assets/d233e9d8-1931-46b0-9309-91957443e8f2" width="100%" />
+</p>
 
 - RocketCatShell 默认启用密码访问。
 - 初始登录密码为 `123456`。
@@ -164,6 +170,9 @@ RocketCatShell 启动后会在本地启动一个独立 WebUI，默认监听 `127
 ---
 
 ## 本地插件系统
+<p align="center">
+  <img src="https://github.com/user-attachments/assets/cd1b4f28-02a7-467a-a6c6-739114a9e5bb" width="100%" />
+</p>
 
 RocketCatShell 当前已经拥有自己的本地插件系统，而不再只是依赖外部宿主插件机制。
 
