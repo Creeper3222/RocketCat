@@ -227,8 +227,30 @@
               </section>
 
               <section class="form-section">
+                <h3>Message 双向索引</h3>
+                <div class="field-grid two-columns">
+                  <label class="field-block span-two">
+                    <span>最大 message 双向索引储存条数</span>
+                    <input
+                      id="settingsMessageIndexMaxEntriesInput"
+                      name="message_index_max_entries"
+                      type="number"
+                      min="1"
+                      step="1"
+                      placeholder="请输入最大 message 双向索引储存条数"
+                    />
+                  </label>
+                </div>
+                <p id="settingsMessageIndexHint" class="settings-helper">当前最多保留 1000 条 message 双向索引。当最新 message 编号达到 3000002000 时，会自动把当前窗口 3000001001 ~ 3000002000 重新映射为 3000000001 ~ 3000001000。</p>
+                <div class="settings-actions">
+                  <button id="settingsMessageIndexRebuildButton" class="action-button subtle" type="button">手动重建双向索引</button>
+                  <button id="settingsMessageIndexSaveButton" class="action-button primary" type="button">保存条数</button>
+                </div>
+              </section>
+
+              <section class="form-section">
                 <h3>配置文件</h3>
-                <p class="settings-helper">导出或导入当前所有 Bot 设置、WebUI 登录密码与默认 WebUI 端口，以及全部插件主配置。</p>
+                <p class="settings-helper">导出或导入当前所有 Bot 设置、WebUI 登录密码、默认 WebUI 端口、message 双向索引条数上限，以及全部插件主配置。</p>
                 <div class="settings-actions">
                   <button id="settingsExportConfigButton" class="action-button subtle" type="button">导出配置</button>
                   <button id="settingsImportConfigButton" class="action-button primary" type="button">导入配置</button>

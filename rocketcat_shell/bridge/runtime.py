@@ -34,6 +34,7 @@ class BridgeRuntime:
         *,
         data_dir: Path | None = None,
         instance_name: str = "bridge",
+        message_index_max_entries: int = DurableIdMap._DEFAULT_MESSAGE_WINDOW_SIZE,
         disable_callback: DisableCallback | None = None,
         plugin_manager: RocketCatPluginManager | None = None,
     ):
@@ -44,13 +45,20 @@ class BridgeRuntime:
             data_dir = resolve_plugin_data_dir(plugin_root)
         self.data_dir = data_dir
         self.data_dir.mkdir(parents=True, exist_ok=True)
+        self.message_index_max_entries = DurableIdMap.normalize_message_window_size(
+            message_index_max_entries
+        )
         self._disable_callback = disable_callback
         self._plugin_manager = plugin_manager
 
         self.config = BridgeConfig.from_mapping(raw_config)
         self.state_store = JsonStore(self.data_dir / "runtime_state.json")
-        self.id_map = DurableIdMap(JsonStore(self.data_dir / "id_map.json"))
         self.message_store = MessageStore(JsonStore(self.data_dir / "message_registry.json"))
+        self.id_map = DurableIdMap(
+            JsonStore(self.data_dir / "id_map.json"),
+            message_window_size=self.message_index_max_entries,
+            on_message_window_changed=self.message_store.rebuild_for_active_mappings,
+        )
         self.private_room_store = PrivateRoomStore(JsonStore(self.data_dir / "private_rooms.json"))
         self.context_room_store = ContextRoomStore(JsonStore(self.data_dir / "context_room_registry.json"))
         self.rocketchat: RocketChatClient | None = None
@@ -114,6 +122,17 @@ class BridgeRuntime:
     @property
     def started(self) -> bool:
         return self._started
+
+    def set_message_index_window_size(self, message_index_max_entries: int) -> None:
+        self.message_index_max_entries = DurableIdMap.normalize_message_window_size(
+            message_index_max_entries
+        )
+        self.id_map.set_message_window_size(self.message_index_max_entries)
+        if isinstance(self.raw_config, dict):
+            self.raw_config["message_index_max_entries"] = self.message_index_max_entries
+
+    async def rebuild_message_indexes(self, *, force_compact: bool = False) -> dict[str, Any]:
+        return await self.id_map.rebuild_message_window(force_compact=force_compact)
 
     async def get_basic_info_summary(self) -> dict[str, Any] | None:
         self._reload_config_snapshot()

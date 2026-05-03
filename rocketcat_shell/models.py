@@ -7,6 +7,7 @@ from typing import Any, Mapping
 DEFAULT_WEBUI_HOST = "127.0.0.1"
 DEFAULT_WEBUI_PORT = 5751
 DEFAULT_WEBUI_ACCESS_PASSWORD = "123456"
+DEFAULT_MESSAGE_INDEX_MAX_ENTRIES = 1000
 DEFAULT_ONEBOT_WS_URL = "ws://127.0.0.1:6199/ws/"
 DEFAULT_RECONNECT_DELAY = 5.0
 DEFAULT_MAX_RECONNECT_ATTEMPTS = 10
@@ -44,6 +45,11 @@ def _coerce_int(value: Any, default: int) -> int:
         return int(default)
 
 
+def _coerce_positive_int(value: Any, default: int, minimum: int = 1) -> int:
+    coerced = _coerce_int(value, default)
+    return coerced if coerced >= int(minimum) else int(default)
+
+
 def _coerce_float(value: Any, default: float) -> float:
     try:
         if value is None:
@@ -60,6 +66,7 @@ class ShellSettings:
     webui_host: str = DEFAULT_WEBUI_HOST
     webui_port: int = DEFAULT_WEBUI_PORT
     webui_access_password: str = DEFAULT_WEBUI_ACCESS_PASSWORD
+    message_index_max_entries: int = DEFAULT_MESSAGE_INDEX_MAX_ENTRIES
     log_level: str = "INFO"
     auto_open_browser: bool = True
     default_onebot_ws_url: str = DEFAULT_ONEBOT_WS_URL
@@ -81,6 +88,10 @@ class ShellSettings:
             webui_access_password=str(
                 data.get("webui_access_password", DEFAULT_WEBUI_ACCESS_PASSWORD)
                 or DEFAULT_WEBUI_ACCESS_PASSWORD
+            ),
+            message_index_max_entries=_coerce_positive_int(
+                data.get("message_index_max_entries", DEFAULT_MESSAGE_INDEX_MAX_ENTRIES),
+                DEFAULT_MESSAGE_INDEX_MAX_ENTRIES,
             ),
             log_level=str(data.get("log_level", "INFO") or "INFO").upper(),
             auto_open_browser=_coerce_bool(data.get("auto_open_browser", True), True),
@@ -118,6 +129,7 @@ class ShellSettings:
             "webui_host": self.webui_host,
             "webui_port": self.webui_port,
             "webui_access_password": self.webui_access_password,
+            "message_index_max_entries": self.message_index_max_entries,
             "log_level": self.log_level,
             "auto_open_browser": self.auto_open_browser,
             "default_onebot_ws_url": self.default_onebot_ws_url,

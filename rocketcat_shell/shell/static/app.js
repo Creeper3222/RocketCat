@@ -81,6 +81,7 @@ const elements = {
   settingsPasswordMode: document.getElementById('settingsPasswordMode'),
   settingsPasswordHint: document.getElementById('settingsPasswordHint'),
   settingsPortHint: document.getElementById('settingsPortHint'),
+  settingsMessageIndexHint: document.getElementById('settingsMessageIndexHint'),
   pluginCount: document.getElementById('pluginCount'),
   pluginEnabledCount: document.getElementById('pluginEnabledCount'),
   basicInfoGrid: document.getElementById('basicInfoGrid'),
@@ -104,8 +105,11 @@ const elements = {
   settingsPasswordHelper: document.getElementById('settingsPasswordHelper'),
   settingsWebuiPasswordInput: document.getElementById('settingsWebuiPasswordInput'),
   settingsWebuiPortInput: document.getElementById('settingsWebuiPortInput'),
+  settingsMessageIndexMaxEntriesInput: document.getElementById('settingsMessageIndexMaxEntriesInput'),
   settingsPasswordSaveButton: document.getElementById('settingsPasswordSaveButton'),
   settingsPortSaveButton: document.getElementById('settingsPortSaveButton'),
+  settingsMessageIndexSaveButton: document.getElementById('settingsMessageIndexSaveButton'),
+  settingsMessageIndexRebuildButton: document.getElementById('settingsMessageIndexRebuildButton'),
   settingsExportConfigButton: document.getElementById('settingsExportConfigButton'),
   settingsImportConfigButton: document.getElementById('settingsImportConfigButton'),
   settingsImportFileInput: document.getElementById('settingsImportFileInput'),
@@ -453,12 +457,19 @@ function renderSettings(payload) {
     elements.settingsPortHint.textContent = settings.webui_port_hint
       || '保存后会写入配置。重启 RocketCat Shell 时会优先尝试该端口；如果端口被占用，仍会自动回退到可用端口。';
   }
+  if (elements.settingsMessageIndexHint) {
+    elements.settingsMessageIndexHint.textContent = settings.message_index_hint
+      || '当前最多保留 1000 条 message 双向索引。当最新 message 编号达到 3000002000 时，会自动把当前窗口 3000001001 ~ 3000002000 重新映射为 3000000001 ~ 3000001000。';
+  }
 
   if (elements.settingsWebuiPasswordInput) {
     elements.settingsWebuiPasswordInput.value = '';
   }
   if (elements.settingsWebuiPortInput) {
     elements.settingsWebuiPortInput.value = String(settings.webui_configured_port || state.status?.independent_webui_port || 5751);
+  }
+  if (elements.settingsMessageIndexMaxEntriesInput) {
+    elements.settingsMessageIndexMaxEntriesInput.value = String(settings.message_index_max_entries || 1000);
   }
 }
 
@@ -1076,6 +1087,49 @@ async function savePortSettings() {
   showToast('WebUI 访问端口已写入配置；重启后会优先尝试新端口', 'success');
 }
 
+async function saveMessageIndexSettings() {
+  const rawValue = String(elements.settingsMessageIndexMaxEntriesInput?.value || '').trim();
+  if (!rawValue) {
+    throw new Error('请输入最大 message 双向索引储存条数');
+  }
+
+  const maxEntries = Number(rawValue);
+  if (!Number.isInteger(maxEntries) || maxEntries <= 0) {
+    throw new Error('最大 message 双向索引储存条数必须是正整数');
+  }
+
+  const payload = await requestJson('/api/settings', {
+    method: 'PUT',
+    body: JSON.stringify({ message_index_max_entries: maxEntries }),
+  });
+  state.settings.loaded = true;
+  renderSettings(payload);
+  showToast('message 双向索引条数上限已保存，现有索引窗口已按新规则整理', 'success');
+}
+
+function summarizeMessageIndexResult(result) {
+  const botCount = Number(result?.bot_count) || 0;
+  const changedBotCount = Number(result?.changed_bot_count) || 0;
+  const removedCount = Number(result?.removed_message_mapping_count) || 0;
+  if (botCount <= 0) {
+    return '当前没有可处理的 Bot 索引';
+  }
+  return `已处理 ${botCount} 个 Bot，发生重排 ${changedBotCount} 个，清理 ${removedCount} 条旧映射`;
+}
+
+async function rebuildMessageIndexes() {
+  const confirmed = window.confirm('确认按当前条数上限手动重建所有 Bot 的 message 双向索引吗？');
+  if (!confirmed) {
+    return;
+  }
+
+  const payload = await requestJson('/api/settings/rebuild-message-indexes', {
+    method: 'POST',
+  });
+  await loadSettings({ forceReload: true, silent: true });
+  showToast(summarizeMessageIndexResult(payload.result), 'success');
+}
+
 async function exportShellConfiguration() {
   const payload = await requestJson('/api/settings/export-config');
   const text = `${JSON.stringify(payload, null, 2)}\n`;
@@ -1314,6 +1368,20 @@ elements.settingsPortSaveButton?.addEventListener('click', async () => {
     await savePortSettings();
   } catch (error) {
     showToast(error.message || '设置保存失败', 'error');
+  }
+});
+elements.settingsMessageIndexSaveButton?.addEventListener('click', async () => {
+  try {
+    await saveMessageIndexSettings();
+  } catch (error) {
+    showToast(error.message || '设置保存失败', 'error');
+  }
+});
+elements.settingsMessageIndexRebuildButton?.addEventListener('click', async () => {
+  try {
+    await rebuildMessageIndexes();
+  } catch (error) {
+    showToast(error.message || '手动重建双向索引失败', 'error');
   }
 });
 elements.settingsExportConfigButton?.addEventListener('click', async () => {

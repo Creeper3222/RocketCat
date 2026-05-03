@@ -94,7 +94,7 @@ class ShellWebUI:
         self._bound_socket: socket.socket | None = None
         self._log_buffer = BridgeLogBuffer(max_entries=5000)
         self._log_handler = BridgeLogHandler(self._log_buffer)
-        self._app = FastAPI(title="RocketCat Shell", version="0.1.0")
+        self._app = FastAPI(title="RocketCat Shell", version="v0.1.1")
         self._static_dir = Path(__file__).resolve().parent / "static"
         self._login_file = self._static_dir / "login.html"
         self._setup_routes()
@@ -145,6 +145,11 @@ class ShellWebUI:
         self._app.add_api_route(
             "/api/settings/import-config",
             self._handle_import_configuration,
+            methods=["POST"],
+        )
+        self._app.add_api_route(
+            "/api/settings/rebuild-message-indexes",
+            self._handle_rebuild_message_indexes,
             methods=["POST"],
         )
         self._app.add_api_route("/api/logs", self._handle_logs, methods=["GET"])
@@ -498,6 +503,14 @@ class ShellWebUI:
 
         if hasattr(self.manager, "settings") and getattr(self.manager, "settings") is not None:
             self._apply_access_password(self.manager.settings.webui_access_password)
+        return {"ok": True, "result": result}
+
+    async def _handle_rebuild_message_indexes(self) -> dict[str, Any]:
+        try:
+            result = await self.manager.rebuild_message_indexes()
+        except Exception as exc:
+            logger.error(f"[RocketCatShell] 手动重建 message 双向索引失败: {exc!r}")
+            raise HTTPException(status_code=500, detail="手动重建 message 双向索引失败") from exc
         return {"ok": True, "result": result}
 
     async def _handle_logs(

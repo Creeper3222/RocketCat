@@ -8,7 +8,9 @@ from typing import Any
 from urllib.parse import quote
 
 from ..__init__ import __version__
+from ..bridge.id_map import DurableIdMap
 from ..bridge.runtime import BridgeRuntime
+from ..bridge.storage import JsonStore, MessageStore
 from ..layout import ProjectLayout
 from ..logger import logger
 from ..models import BotRecord, DEFAULT_WEBUI_ACCESS_PASSWORD, ShellSettings
@@ -130,6 +132,11 @@ class ShellManager:
             "webui_actual_port": actual_port,
             "webui_access_url": f"http://{host}:{actual_port}/",
             "webui_port_hint": self._build_webui_port_hint(settings),
+            "message_index_max_entries": settings.message_index_max_entries,
+            "message_index_hint": self._build_message_index_hint(settings.message_index_max_entries),
+            "message_index_reset_surrogate_id": DurableIdMap.message_reset_surrogate_id(
+                settings.message_index_max_entries
+            ),
         }
 
     async def export_configuration(self) -> dict[str, Any]:
@@ -148,6 +155,7 @@ class ShellManager:
             "shell_settings": {
                 "webui_access_password": settings.webui_access_password,
                 "webui_port": settings.webui_port,
+                "message_index_max_entries": settings.message_index_max_entries,
             },
             "bots": bots,
             "plugin_configs": plugin_configs,
@@ -182,12 +190,25 @@ class ShellManager:
         if candidate_port < 1 or candidate_port > 65535:
             raise ValueError("配置导入失败，WebUI 访问端口必须在 1 到 65535 之间")
 
+        try:
+            candidate_message_index_max_entries = int(
+                raw_shell_settings.get(
+                    "message_index_max_entries",
+                    settings.message_index_max_entries,
+                )
+            )
+        except (TypeError, ValueError) as exc:
+            raise ValueError("配置导入失败，最大 message 双向索引储存条数必须是正整数") from exc
+        if candidate_message_index_max_entries <= 0:
+            raise ValueError("配置导入失败，最大 message 双向索引储存条数必须是正整数")
+
         candidate_bots = self._build_import_bots(raw_bots, defaults=settings)
 
         imported_plugin_count = 0
         async with self._lock:
             settings.webui_access_password = candidate_password
             settings.webui_port = candidate_port
+            settings.message_index_max_entries = candidate_message_index_max_entries
             self.bots = candidate_bots
             self._persist_after_bot_change_locked()
 
@@ -207,20 +228,28 @@ class ShellManager:
 
         self.plugin_manager.refresh()
         await self._reconcile_runtimes("configuration imported")
+        message_index_summary = await self._apply_message_index_policy(
+            force_compact=False,
+            reason="configuration imported",
+        )
         logger.info(
-            "[RocketCatShell] 配置导入完成 | bots=%s | plugin_configs=%s",
+            "[RocketCatShell] 配置导入完成 | bots=%s | plugin_configs=%s | message_index_max_entries=%s",
             len(candidate_bots),
             imported_plugin_count,
+            candidate_message_index_max_entries,
         )
         return {
             "bot_count": len(candidate_bots),
             "plugin_config_count": imported_plugin_count,
             "webui_port": candidate_port,
+            "message_index_max_entries": candidate_message_index_max_entries,
+            "message_index_summary": message_index_summary,
         }
 
     async def update_settings(self, payload: dict[str, Any]) -> dict[str, Any]:
         settings = self._require_settings()
         changes: list[str] = []
+        should_apply_message_index_policy = False
 
         async with self._lock:
             if "webui_access_password" in payload:
@@ -243,10 +272,28 @@ class ShellManager:
                 settings.webui_port = candidate_port
                 changes.append("port")
 
+            if "message_index_max_entries" in payload:
+                raw_max_entries = payload.get("message_index_max_entries")
+                try:
+                    candidate_max_entries = int(raw_max_entries)
+                except (TypeError, ValueError) as exc:
+                    raise ValueError("最大 message 双向索引储存条数必须是正整数") from exc
+                if candidate_max_entries <= 0:
+                    raise ValueError("最大 message 双向索引储存条数必须是正整数")
+                settings.message_index_max_entries = candidate_max_entries
+                changes.append("message_index")
+                should_apply_message_index_policy = True
+
             if not changes:
                 raise ValueError("未提供可更新的设置项")
 
             self._persist_shell_settings()
+
+        if should_apply_message_index_policy:
+            await self._apply_message_index_policy(
+                force_compact=False,
+                reason="message index settings updated",
+            )
 
         if "password" in changes:
             logger.info("[RocketCatShell] WebUI 登录认证密码已更新。")
@@ -255,7 +302,18 @@ class ShellManager:
                 "[RocketCatShell] WebUI 访问端口配置已更新为 %s；当前运行中的监听端口保持不变，重启后优先尝试新端口。",
                 settings.webui_port,
             )
+        if "message_index" in changes:
+            logger.info(
+                "[RocketCatShell] 最大 message 双向索引储存条数已更新为 %s；现有索引窗口已按新规则整理。",
+                settings.message_index_max_entries,
+            )
         return await self.get_settings_state()
+
+    async def rebuild_message_indexes(self) -> dict[str, Any]:
+        return await self._apply_message_index_policy(
+            force_compact=True,
+            reason="manual message index rebuild",
+        )
 
     async def get_webui_state(self) -> dict[str, Any]:
         settings = self._require_settings()
@@ -468,6 +526,7 @@ class ShellManager:
                     raw_config=bot.to_mapping(),
                     data_dir=self.layout.bots_dir / bot.bot_id,
                     instance_name=bot.name or bot.bot_id,
+                    message_index_max_entries=self._require_settings().message_index_max_entries,
                     disable_callback=lambda bot_id=bot.bot_id: self._disable_bot_after_failure(bot_id),
                     plugin_manager=self.plugin_manager,
                 )
@@ -622,6 +681,101 @@ class ShellManager:
             f"当前实际访问端口为 {actual_port}，配置端口为 {settings.webui_port}。"
             f" 重启 RocketCat Shell 后会优先尝试 {settings.webui_port}；若被占用仍会自动回退。"
         )
+
+    def _build_message_index_hint(self, max_entries: int) -> str:
+        normalized_max_entries = DurableIdMap.normalize_message_window_size(max_entries)
+        lower_surrogate_id = DurableIdMap.message_window_lower_surrogate_id()
+        upper_surrogate_id = DurableIdMap.message_window_upper_surrogate_id(normalized_max_entries)
+        pre_compact_start = upper_surrogate_id + 1
+        reset_surrogate_id = DurableIdMap.message_reset_surrogate_id(normalized_max_entries)
+        return (
+            f"当前最多保留 {normalized_max_entries} 条 message 双向索引。"
+            f" 当最新 message 编号达到 {reset_surrogate_id} 时，"
+            f"会自动把当前窗口 {pre_compact_start} ~ {reset_surrogate_id} 重新映射为 "
+            f"{lower_surrogate_id} ~ {upper_surrogate_id}。"
+        )
+
+    async def _apply_message_index_policy(
+        self,
+        *,
+        force_compact: bool,
+        reason: str,
+    ) -> dict[str, Any]:
+        settings = self._require_settings()
+        max_entries = DurableIdMap.normalize_message_window_size(settings.message_index_max_entries)
+
+        async with self._runtime_lock:
+            async with self._lock:
+                bots = list(self.bots)
+                runtimes = dict(self.runtimes)
+
+            items: list[dict[str, Any]] = []
+            changed_bot_count = 0
+            compacted_bot_count = 0
+            removed_message_mapping_count = 0
+
+            for bot in bots:
+                runtime = runtimes.get(bot.bot_id)
+                if runtime is not None:
+                    runtime.set_message_index_window_size(max_entries)
+                    result = await runtime.rebuild_message_indexes(force_compact=force_compact)
+                    runtime_active = bool(runtime.started)
+                else:
+                    result = await self._apply_offline_message_index_policy(
+                        data_dir=self.layout.bots_dir / bot.bot_id,
+                        max_entries=max_entries,
+                        force_compact=force_compact,
+                    )
+                    runtime_active = False
+
+                if result.get("changed"):
+                    changed_bot_count += 1
+                if result.get("compacted"):
+                    compacted_bot_count += 1
+                removed_message_mapping_count += int(result.get("removed_count") or 0)
+                items.append(
+                    {
+                        "bot_id": bot.bot_id,
+                        "name": bot.name or bot.bot_id,
+                        "runtime_active": runtime_active,
+                        **result,
+                    }
+                )
+
+        summary = {
+            "bot_count": len(bots),
+            "changed_bot_count": changed_bot_count,
+            "compacted_bot_count": compacted_bot_count,
+            "removed_message_mapping_count": removed_message_mapping_count,
+            "max_entries": max_entries,
+            "reset_surrogate_id": DurableIdMap.message_reset_surrogate_id(max_entries),
+            "items": items,
+        }
+        logger.info(
+            "[RocketCatShell] message index policy applied | reason=%s | bots=%s | changed=%s | compacted=%s | removed=%s | max_entries=%s",
+            reason,
+            summary["bot_count"],
+            summary["changed_bot_count"],
+            summary["compacted_bot_count"],
+            summary["removed_message_mapping_count"],
+            max_entries,
+        )
+        return summary
+
+    async def _apply_offline_message_index_policy(
+        self,
+        *,
+        data_dir: Path,
+        max_entries: int,
+        force_compact: bool,
+    ) -> dict[str, Any]:
+        message_store = MessageStore(JsonStore(data_dir / "message_registry.json"))
+        id_map = DurableIdMap(
+            JsonStore(data_dir / "id_map.json"),
+            message_window_size=max_entries,
+            on_message_window_changed=message_store.rebuild_for_active_mappings,
+        )
+        return await id_map.rebuild_message_window(force_compact=force_compact)
 
     def _require_settings(self) -> ShellSettings:
         if self.settings is None:
