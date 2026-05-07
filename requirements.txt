@@ -1,3 +1,5 @@
+# Core runtime dependencies for RocketCatShell live.
+# The Rocket.Chat thread reply / thread media routing fixes do not require any new third-party packages.
 aiohttp>=3.9,<4
 cryptography>=44.0.3
 fastapi>=0.110,<1
