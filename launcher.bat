@@ -7,6 +7,7 @@ pushd "%ROOT%"
 
 set "LOCAL_PYTHON=%ROOT%\.venv\Scripts\python.exe"
 set "REQUIREMENTS_FILE=%ROOT%requirements.txt"
+set "DEPENDENCY_CHECKER=%ROOT%tools\check_requirements.py"
 set "BOOTSTRAP_PYTHON="
 set "PYTHON_CMD="
 
@@ -52,10 +53,18 @@ if not exist "%REQUIREMENTS_FILE%" (
     exit /b 1
 )
 
-"%PYTHON_CMD%" -c "import aiohttp, cryptography, fastapi, uvicorn, yaml" >nul 2>nul
+if not exist "%DEPENDENCY_CHECKER%" (
+    echo Dependency checker was not found: %DEPENDENCY_CHECKER%
+    pause
+    popd
+    exit /b 1
+)
+
+echo Checking Python dependencies...
+"%PYTHON_CMD%" "%DEPENDENCY_CHECKER%" "%REQUIREMENTS_FILE%"
 if errorlevel 1 (
-    echo Missing dependencies detected. Installing requirements...
-    "%PYTHON_CMD%" -m pip install -r "%REQUIREMENTS_FILE%"
+    echo Missing or incompatible dependencies detected. Installing requirements...
+    "%PYTHON_CMD%" -m pip install --disable-pip-version-check -r "%REQUIREMENTS_FILE%"
     if errorlevel 1 (
         echo.
         echo Failed to install RocketCat Shell dependencies.
@@ -63,10 +72,20 @@ if errorlevel 1 (
         popd
         exit /b 1
     )
+
+    echo Re-checking Python dependencies...
+    "%PYTHON_CMD%" "%DEPENDENCY_CHECKER%" "%REQUIREMENTS_FILE%"
+    if errorlevel 1 (
+        echo.
+        echo Dependencies are still missing or incompatible after installation.
+        pause
+        popd
+        exit /b 1
+    )
 )
 
 echo Starting RocketCat Shell...
-%PYTHON_CMD% -m rocketcat_shell %*
+"%PYTHON_CMD%" -m rocketcat_shell %*
 set "EXIT_CODE=%ERRORLEVEL%"
 
 if not "%EXIT_CODE%"=="0" (

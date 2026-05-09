@@ -86,6 +86,183 @@ class RocketChatMediaBridge:
             )
         return result
 
+    async def extract_media_descriptors(
+        self,
+        payload: dict[str, Any],
+        *,
+        skip_quote_attachments: bool = True,
+        include_url_images: bool = True,
+    ) -> list[dict[str, str]]:
+        media: list[dict[str, str]] = []
+        seen: set[tuple[str, str]] = set()
+        candidates: list[dict[str, Any]] = []
+        media_shaped_keys = (
+            "type",
+            "mimeType",
+            "contentType",
+            "image_url",
+            "imageUrl",
+            "audio_url",
+            "audioUrl",
+            "video_url",
+            "videoUrl",
+            "title_link",
+            "titleLink",
+            "url",
+            "path",
+            "link",
+        )
+
+        def collect_candidates(source: dict[str, Any]) -> None:
+            files_raw = source.get("files", [])
+            if isinstance(files_raw, dict):
+                candidates.append(files_raw)
+            elif isinstance(files_raw, list):
+                candidates.extend([item for item in files_raw if isinstance(item, dict)])
+
+            for key in ("file", "fileUpload"):
+                single_file = source.get(key)
+                if isinstance(single_file, dict):
+                    candidates.append(single_file)
+
+            if any(source.get(key) for key in media_shaped_keys):
+                candidates.append(source)
+
+        collect_candidates(payload)
+        for attachment in self.get_all_attachments_recursive(
+            payload,
+            skip_quote_attachments=skip_quote_attachments,
+        ):
+            collect_candidates(attachment)
+
+        for candidate in candidates:
+            kind = self.classify_file_kind(candidate)
+            materialized = await self._materialize_media_reference(candidate, kind)
+            if not materialized:
+                continue
+            file_ref = str(materialized.get("path") or materialized.get("url") or "")
+            if not file_ref:
+                continue
+            key = (kind, file_ref)
+            if key in seen:
+                continue
+            seen.add(key)
+            media.append(
+                {
+                    "kind": kind,
+                    "name": str(materialized.get("name") or self._extract_media_name(candidate, file_ref)),
+                    "url": str(materialized.get("url") or ""),
+                    "path": str(materialized.get("path") or ""),
+                }
+            )
+
+        if include_url_images:
+            for url_obj in payload.get("urls", []):
+                if not isinstance(url_obj, dict):
+                    continue
+                meta = url_obj.get("meta") if isinstance(url_obj.get("meta"), dict) else {}
+                headers = url_obj.get("headers") if isinstance(url_obj.get("headers"), dict) else {}
+                content_type = (
+                    meta.get("contentType")
+                    or headers.get("contentType")
+                    or headers.get("content-type")
+                    or ""
+                )
+                if not str(content_type).startswith("image/"):
+                    continue
+                candidate = url_obj.get("url")
+                if not isinstance(candidate, str) or not candidate:
+                    continue
+                normalized = await self.client._normalize_media_url(candidate)
+                key = ("image", normalized)
+                if key in seen:
+                    continue
+                seen.add(key)
+                media.append(
+                    {
+                        "kind": "image",
+                        "name": self._extract_media_name(url_obj, normalized),
+                        "url": normalized,
+                        "path": "",
+                    }
+                )
+
+        return media
+
+    def build_onebot_segments_from_descriptors(
+        self,
+        media_descriptors: list[dict[str, str]],
+    ) -> list[dict[str, Any]]:
+        segments: list[dict[str, Any]] = []
+        seen: set[tuple[str, str]] = set()
+
+        for media in media_descriptors:
+            kind = str(media.get("kind") or "")
+            file_ref = str(media.get("path") or media.get("url") or "")
+            if not file_ref:
+                continue
+
+            if kind == "image":
+                key = ("image", file_ref)
+                if key in seen:
+                    continue
+                seen.add(key)
+                segments.append({"type": "image", "data": {"file": file_ref}})
+                continue
+
+            if kind == "audio":
+                key = ("record", file_ref)
+                if key in seen:
+                    continue
+                seen.add(key)
+                segments.append({"type": "record", "data": {"file": file_ref}})
+                continue
+
+            if kind == "video":
+                key = ("video", file_ref)
+                if key in seen:
+                    continue
+                seen.add(key)
+                segments.append({"type": "video", "data": {"file": file_ref}})
+                continue
+
+            key = ("file", file_ref)
+            if key in seen:
+                continue
+            seen.add(key)
+            name = str(media.get("name") or "attachment")
+            if media.get("path"):
+                segments.append(
+                    {
+                        "type": "text",
+                        "data": {
+                            "text": f"[加密文件] {name}",
+                        },
+                    }
+                )
+                continue
+            segments.append(
+                {
+                    "type": "file",
+                    "data": {
+                        "url": file_ref,
+                        "file_name": name,
+                        "name": name,
+                    },
+                }
+            )
+
+        return segments
+
+    def _extract_media_name(self, payload: dict[str, Any], media_url: str) -> str:
+        return str(
+            payload.get("name")
+            or payload.get("title")
+            or payload.get("file_name")
+            or os.path.basename(urlparse(media_url).path)
+            or "attachment"
+        )
+
     def _is_encrypted_media_attachment(self, file_obj: dict[str, Any]) -> bool:
         encryption = file_obj.get("encryption")
         return (
@@ -323,85 +500,8 @@ class RocketChatMediaBridge:
         return results
 
     async def extract_onebot_segments(self, raw_msg: dict[str, Any]) -> list[dict[str, Any]]:
-        segments: list[dict[str, Any]] = []
-        seen: set[tuple[str, str]] = set()
-
-        for media in await self._extract_media_payloads(raw_msg, "image"):
-            file_ref = media.get("path") or media.get("url") or ""
-            key = ("image", file_ref)
-            if not file_ref or key in seen:
-                continue
-            seen.add(key)
-            segments.append({"type": "image", "data": {"file": file_ref}})
-
-        for media in await self._extract_media_payloads(raw_msg, "audio"):
-            file_ref = media.get("path") or media.get("url") or ""
-            key = ("record", file_ref)
-            if not file_ref or key in seen:
-                continue
-            seen.add(key)
-            segments.append({"type": "record", "data": {"file": file_ref}})
-
-        for media in await self._extract_media_payloads(raw_msg, "video"):
-            file_ref = media.get("path") or media.get("url") or ""
-            key = ("video", file_ref)
-            if not file_ref or key in seen:
-                continue
-            seen.add(key)
-            segments.append({"type": "video", "data": {"file": file_ref}})
-
-        for media in await self._extract_media_payloads(raw_msg, "file"):
-            file_ref = media.get("path") or media.get("url") or ""
-            key = ("file", file_ref)
-            if not file_ref or key in seen:
-                continue
-            seen.add(key)
-            name = media.get("name") or "attachment"
-            if media.get("path"):
-                segments.append(
-                    {
-                        "type": "text",
-                        "data": {
-                            "text": f"[加密文件] {name}",
-                        },
-                    }
-                )
-                continue
-            segments.append(
-                {
-                    "type": "file",
-                    "data": {
-                        "url": file_ref,
-                        "file_name": name,
-                        "name": name,
-                    },
-                }
-            )
-
-        for url_obj in raw_msg.get("urls", []):
-            if not isinstance(url_obj, dict):
-                continue
-            meta = url_obj.get("meta") if isinstance(url_obj.get("meta"), dict) else {}
-            headers = url_obj.get("headers") if isinstance(url_obj.get("headers"), dict) else {}
-            content_type = (
-                meta.get("contentType")
-                or headers.get("contentType")
-                or headers.get("content-type")
-                or ""
-            )
-            if not str(content_type).startswith("image/"):
-                continue
-            candidate = url_obj.get("url")
-            if not isinstance(candidate, str) or not candidate:
-                continue
-            normalized = await self.client._normalize_media_url(candidate)
-            key = ("image", normalized)
-            if key in seen:
-                continue
-            seen.add(key)
-            segments.append({"type": "image", "data": {"file": normalized}})
-
-        return segments
+        descriptors = await self.extract_media_descriptors(raw_msg)
+        return self.build_onebot_segments_from_descriptors(descriptors)
 
     def infer_upload_content_type(self, file_path: str, filename: str) -> str:
         guessed_type, _ = mimetypes.guess_type(filename)
