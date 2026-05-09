@@ -176,20 +176,24 @@ function isAbortError(error) {
   return Boolean(error && (error.name === 'AbortError' || error.code === 20));
 }
 
-async function writeTextWithPicker(fileName, text) {
-  if (typeof window.showSaveFilePicker === 'function') {
-    const handle = await window.showSaveFilePicker({
-      suggestedName: fileName,
-      types: [
-        {
-          description: 'RocketCat 配置文件',
-          accept: {
-            'application/json': ['.json'],
-          },
+function buildJsonSavePickerOptions(fileName) {
+  return {
+    suggestedName: fileName,
+    types: [
+      {
+        description: 'RocketCat 配置文件',
+        accept: {
+          'application/json': ['.json'],
         },
-      ],
-    });
-    const writable = await handle.createWritable();
+      },
+    ],
+  };
+}
+
+async function writeTextWithPicker(fileName, text, handle = null) {
+  if (handle || typeof window.showSaveFilePicker === 'function') {
+    const pickerHandle = handle || await window.showSaveFilePicker(buildJsonSavePickerOptions(fileName));
+    const writable = await pickerHandle.createWritable();
     await writable.write(text);
     await writable.close();
     return;
@@ -1149,9 +1153,13 @@ async function rebuildMessageIndexes() {
 }
 
 async function exportShellConfiguration() {
+  const fileName = 'rocketcat_config.json';
+  const handle = typeof window.showSaveFilePicker === 'function'
+    ? await window.showSaveFilePicker(buildJsonSavePickerOptions(fileName))
+    : null;
   const payload = await requestJson('/api/settings/export-config');
   const text = `${JSON.stringify(payload, null, 2)}\n`;
-  await writeTextWithPicker('rocketcat_config.json', text);
+  await writeTextWithPicker(fileName, text, handle);
 }
 
 async function importShellConfiguration() {
