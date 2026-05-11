@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import base64
 import hashlib
-import json
 import mimetypes
 import os
 import tempfile
@@ -12,6 +11,8 @@ from urllib.parse import urlparse
 import aiohttp
 
 from rocketcat_shell.logger import logger
+
+from .json_codec import json_dumps_compact, json_loads
 
 
 class RocketChatMediaBridge:
@@ -545,7 +546,7 @@ class RocketChatMediaBridge:
 
         try:
             async with self.client._http_session.post(url, data=form, headers=headers) as resp:
-                data = await resp.json(content_type=None)
+                data = await resp.json(content_type=None, loads=json_loads)
                 if resp.status >= 400 or not data.get("success", resp.status < 400):
                     logger.error(f"[RocketChatOneBotBridge] 上传请求失败: status={resp.status} data={data}")
                     return None
@@ -609,76 +610,85 @@ class RocketChatMediaBridge:
         description: str = "",
         tmid: Optional[str] = None,
     ) -> Optional[dict[str, Any]]:
-        try:
-            with open(file_path, "rb") as fp:
-                file_bytes = fp.read()
-        except FileNotFoundError:
+        if not os.path.exists(file_path):
             logger.error(f"[RocketChatOneBotBridge] 文件不存在: {file_path}")
             return None
 
-        upload = await self.client.e2ee.prepare_encrypted_upload(
-            room_id,
-            file_name=resolved_name,
-            mime_type=self.infer_upload_content_type(file_path, resolved_name),
-            file_bytes=file_bytes,
-        )
-        if not upload:
-            logger.warning(
-                f"[RocketChatOneBotBridge][E2EE] 未能准备加密上传数据，已跳过 room_id={room_id!r}"
+        upload = None
+        try:
+            upload = await self.client.e2ee.prepare_encrypted_upload(
+                room_id,
+                file_name=resolved_name,
+                mime_type=self.infer_upload_content_type(file_path, resolved_name),
+                file_path=file_path,
             )
-            return None
+            if not upload:
+                logger.warning(
+                    f"[RocketChatOneBotBridge][E2EE] 未能准备加密上传数据，已跳过 room_id={room_id!r}"
+                )
+                return None
 
-        file_content = await self.client.e2ee.build_upload_file_content(room_id, upload)
-        if not file_content:
-            logger.warning(
-                f"[RocketChatOneBotBridge][E2EE] 未能生成加密文件元数据，已跳过 room_id={room_id!r}"
+            file_content = await self.client.e2ee.build_upload_file_content(room_id, upload)
+            if not file_content:
+                logger.warning(
+                    f"[RocketChatOneBotBridge][E2EE] 未能生成加密文件元数据，已跳过 room_id={room_id!r}"
+                )
+                return None
+
+            with open(upload.encrypted_path, "rb") as encrypted_fp:
+                form = aiohttp.FormData()
+                form.add_field(
+                    "file",
+                    encrypted_fp,
+                    filename=upload.encrypted_name,
+                    content_type="application/octet-stream",
+                )
+                form.add_field("content", json_dumps_compact(file_content["encrypted"]))
+
+                upload_resp = await self.post_multipart_json(
+                    f"{self.client.config.server_url}/api/v1/rooms.media/{room_id}",
+                    form,
+                )
+            if not upload_resp:
+                return None
+
+            uploaded_file = upload_resp.get("file") or {}
+            file_id = uploaded_file.get("_id")
+            file_url = uploaded_file.get("url")
+            if not file_id or not file_url:
+                logger.error(
+                    f"[RocketChatOneBotBridge][E2EE] rooms.media 响应缺少文件信息: {upload_resp}"
+                )
+                return None
+
+            confirm_payload = await self.client.e2ee.build_media_confirm_payload(
+                room_id,
+                upload_id=file_id,
+                upload_url=file_url,
+                upload=upload,
+                text=description,
+                tmid=tmid,
             )
-            return None
+            if not confirm_payload:
+                logger.warning(
+                    f"[RocketChatOneBotBridge][E2EE] 未能生成 mediaConfirm 负载，已跳过 room_id={room_id!r}"
+                )
+                return None
 
-        form = aiohttp.FormData()
-        form.add_field(
-            "file",
-            upload.encrypted_bytes,
-            filename=upload.encrypted_name,
-            content_type="application/octet-stream",
-        )
-        form.add_field("content", json.dumps(file_content["encrypted"], ensure_ascii=False))
-
-        upload_resp = await self.post_multipart_json(
-            f"{self.client.config.server_url}/api/v1/rooms.media/{room_id}",
-            form,
-        )
-        if not upload_resp:
-            return None
-
-        uploaded_file = upload_resp.get("file") or {}
-        file_id = uploaded_file.get("_id")
-        file_url = uploaded_file.get("url")
-        if not file_id or not file_url:
-            logger.error(
-                f"[RocketChatOneBotBridge][E2EE] rooms.media 响应缺少文件信息: {upload_resp}"
+            data = await self.client._post_json_message(
+                f"{self.client.config.server_url}/api/v1/rooms.mediaConfirm/{room_id}/{file_id}",
+                confirm_payload,
             )
-            return None
-
-        confirm_payload = await self.client.e2ee.build_media_confirm_payload(
-            room_id,
-            upload_id=file_id,
-            upload_url=file_url,
-            upload=upload,
-            text=description,
-            tmid=tmid,
-        )
-        if not confirm_payload:
-            logger.warning(
-                f"[RocketChatOneBotBridge][E2EE] 未能生成 mediaConfirm 负载，已跳过 room_id={room_id!r}"
-            )
-            return None
-
-        data = await self.client._post_json_message(
-            f"{self.client.config.server_url}/api/v1/rooms.mediaConfirm/{room_id}/{file_id}",
-            confirm_payload,
-        )
-        return (data or {}).get("message") or data
+            return (data or {}).get("message") or data
+        finally:
+            encrypted_path = str(getattr(upload, "encrypted_path", "") or "")
+            if encrypted_path and os.path.exists(encrypted_path):
+                try:
+                    os.unlink(encrypted_path)
+                except OSError as exc:
+                    logger.warning(
+                        f"[RocketChatOneBotBridge][E2EE] 清理加密临时文件失败: {encrypted_path} error={exc!r}"
+                    )
 
     async def send_remote_media_fallback(
         self,
@@ -793,32 +803,86 @@ class RocketChatMediaBridge:
         default_suffix: str,
     ) -> tuple[str | None, Callable[[], None] | None]:
         parsed = urlparse(url)
+        if parsed.scheme not in {"http", "https"}:
+            logger.warning(f"[RocketChatOneBotBridge] 鎷掔粷涓嬭浇涓嶆敮鎸佺殑濯掍綋鍗忚: {url}")
+            return None, None
+        if self.client._http_session is None:
+            return None, None
+
         filename = os.path.basename(parsed.path)
         _, ext = os.path.splitext(filename)
         suffix = ext if ext else default_suffix
-        raw = await self.download_remote_bytes(url)
-        if raw is None:
-            return None, None
-
-        tmp = tempfile.NamedTemporaryFile(suffix=suffix, delete=False)
+        tmp_path: str | None = None
         try:
-            tmp.write(raw)
-            tmp.close()
-            return tmp.name, lambda: os.unlink(tmp.name)
-        except Exception:
-            tmp.close()
-            os.unlink(tmp.name)
-            raise
+            async with self.client._http_session.get(
+                url,
+                timeout=aiohttp.ClientTimeout(total=30, connect=10),
+                allow_redirects=True,
+                max_redirects=3,
+            ) as resp:
+                if resp.status >= 400:
+                    logger.error(f"[RocketChatOneBotBridge] 涓嬭浇濯掍綋澶辫触 {resp.status}: {url}")
+                    return None, None
+
+                limit = self.client.config.remote_media_max_size
+                content_length = resp.content_length
+                if content_length is not None and content_length > limit:
+                    logger.error(
+                        f"[RocketChatOneBotBridge] 涓嬭浇濯掍綋澶辫触锛屾枃浠惰繃澶? {content_length} > {limit} ({url})"
+                    )
+                    return None, None
+
+                tmp = tempfile.NamedTemporaryFile(suffix=suffix, delete=False)
+                tmp_path = tmp.name
+                try:
+                    downloaded = 0
+                    async for chunk in resp.content.iter_chunked(64 * 1024):
+                        downloaded += len(chunk)
+                        if downloaded > limit:
+                            logger.error(
+                                f"[RocketChatOneBotBridge] 涓嬭浇濯掍綋澶辫触锛屾枃浠惰秴杩囬檺鍒? {downloaded} > {limit} ({url})"
+                            )
+                            tmp.close()
+                            os.unlink(tmp_path)
+                            return None, None
+                        tmp.write(chunk)
+                    tmp.close()
+                    return tmp_path, lambda path=tmp_path: os.unlink(path)
+                except Exception:
+                    tmp.close()
+                    if tmp_path and os.path.exists(tmp_path):
+                        os.unlink(tmp_path)
+                    raise
+        except Exception as exc:
+            logger.error(f"[RocketChatOneBotBridge] 涓嬭浇濯掍綋寮傚父: {exc!r}")
+            if tmp_path and os.path.exists(tmp_path):
+                os.unlink(tmp_path)
+            return None, None
 
     def decode_base64_media(
         self,
         file_ref: str,
         default_suffix: str,
     ) -> tuple[str | None, Callable[[], None] | None]:
+        encoded = "".join(file_ref[len("base64://") :].split())
+        limit = self.client.config.remote_media_max_size
+        estimated_size = (len(encoded) // 4) * 3
+        if estimated_size > limit + 2:
+            logger.error(
+                f"[RocketChatOneBotBridge] Base64 濯掍綋澶勭悊澶辫触锛屾枃浠惰繃澶? {estimated_size} > {limit}"
+            )
+            return None, None
+
         try:
-            raw = base64.b64decode(file_ref[len("base64://") :])
+            raw = base64.b64decode(encoded, validate=True)
         except Exception as exc:
             logger.error(f"[RocketChatOneBotBridge] Base64 媒体处理失败: {exc!r}")
+            return None, None
+
+        if len(raw) > limit:
+            logger.error(
+                f"[RocketChatOneBotBridge] Base64 濯掍綋澶勭悊澶辫触锛屾枃浠惰秴杩囬檺鍒? {len(raw)} > {limit}"
+            )
             return None, None
 
         tmp = tempfile.NamedTemporaryFile(suffix=default_suffix, delete=False)
