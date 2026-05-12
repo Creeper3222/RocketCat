@@ -60,14 +60,15 @@ if not exist "%DEPENDENCY_CHECKER%" (
     exit /b 1
 )
 
-echo Checking Python dependencies...
+echo Checking Python dependencies from requirements.txt...
 "%PYTHON_CMD%" "%DEPENDENCY_CHECKER%" "%REQUIREMENTS_FILE%"
-if errorlevel 1 (
-    echo Missing or incompatible dependencies detected. Installing requirements...
+set "CHECK_EXIT=%ERRORLEVEL%"
+if "%CHECK_EXIT%"=="1" (
+    echo Missing or incompatible requirements.txt dependencies detected. Installing requirements automatically...
     "%PYTHON_CMD%" -m pip install --disable-pip-version-check -r "%REQUIREMENTS_FILE%"
     if errorlevel 1 (
         echo.
-        echo Failed to install RocketCat Shell dependencies.
+        echo Failed to install RocketCat Shell dependencies automatically.
         pause
         popd
         exit /b 1
@@ -75,12 +76,25 @@ if errorlevel 1 (
 
     echo Re-checking Python dependencies...
     "%PYTHON_CMD%" "%DEPENDENCY_CHECKER%" "%REQUIREMENTS_FILE%"
-    if errorlevel 1 (
+    set "CHECK_EXIT=%ERRORLEVEL%"
+    if not "%CHECK_EXIT%"=="0" (
         echo.
-        echo Dependencies are still missing or incompatible after installation.
+        if "%CHECK_EXIT%"=="1" (
+            echo Dependencies are still missing or incompatible after automatic installation.
+        ) else (
+            echo Dependency checker failed after automatic installation with code %CHECK_EXIT%.
+        )
         pause
         popd
-        exit /b 1
+        exit /b %CHECK_EXIT%
+    )
+) else (
+    if not "%CHECK_EXIT%"=="0" (
+        echo.
+        echo Dependency checker failed with code %CHECK_EXIT%.
+        pause
+        popd
+        exit /b %CHECK_EXIT%
     )
 )
 
