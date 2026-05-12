@@ -1,5 +1,5 @@
 @echo off
-setlocal
+setlocal EnableDelayedExpansion
 chcp 65001 >nul
 
 set "ROOT=%~dp0"
@@ -76,17 +76,17 @@ if "%CHECK_EXIT%"=="1" (
 
     echo Re-checking Python dependencies...
     "%PYTHON_CMD%" "%DEPENDENCY_CHECKER%" "%REQUIREMENTS_FILE%"
-    set "CHECK_EXIT=%ERRORLEVEL%"
-    if not "%CHECK_EXIT%"=="0" (
+    set "CHECK_EXIT=!ERRORLEVEL!"
+    if not "!CHECK_EXIT!"=="0" (
         echo.
-        if "%CHECK_EXIT%"=="1" (
+        if "!CHECK_EXIT!"=="1" (
             echo Dependencies are still missing or incompatible after automatic installation.
         ) else (
-            echo Dependency checker failed after automatic installation with code %CHECK_EXIT%.
+            echo Dependency checker failed after automatic installation with code !CHECK_EXIT!.
         )
         pause
         popd
-        exit /b %CHECK_EXIT%
+        exit /b !CHECK_EXIT!
     )
 ) else (
     if not "%CHECK_EXIT%"=="0" (
