@@ -87,9 +87,20 @@ class RocketChatMediaBridge:
             },
         }
 
-    def classify_file_kind(self, file_obj: dict[str, Any]) -> str:
-        candidates: list[str] = []
+    @staticmethod
+    def _match_media_kind(candidate: Any) -> str | None:
+        if not isinstance(candidate, str):
+            return None
+        normalized = candidate.strip().lower()
+        if normalized.startswith("image/"):
+            return "image"
+        if normalized.startswith("audio/"):
+            return "audio"
+        if normalized.startswith("video/"):
+            return "video"
+        return None
 
+    def classify_file_kind(self, file_obj: dict[str, Any]) -> str:
         for key in (
             "type",
             "mimeType",
@@ -98,9 +109,21 @@ class RocketChatMediaBridge:
             "audio_type",
             "video_type",
         ):
+            matched_kind = self._match_media_kind(file_obj.get(key))
+            if matched_kind:
+                return matched_kind
+
+        for key, kind in (
+            ("image_url", "image"),
+            ("imageUrl", "image"),
+            ("audio_url", "audio"),
+            ("audioUrl", "audio"),
+            ("video_url", "video"),
+            ("videoUrl", "video"),
+        ):
             value = file_obj.get(key)
             if isinstance(value, str) and value:
-                candidates.append(value)
+                return kind
 
         for key in (
             "name",
@@ -121,16 +144,9 @@ class RocketChatMediaBridge:
             if not isinstance(value, str) or not value:
                 continue
             guessed, _ = mimetypes.guess_type(value.split("?", 1)[0])
-            if guessed:
-                candidates.append(guessed)
-
-        for candidate in candidates:
-            if candidate.startswith("image/"):
-                return "image"
-            if candidate.startswith("audio/"):
-                return "audio"
-            if candidate.startswith("video/"):
-                return "video"
+            matched_kind = self._match_media_kind(guessed)
+            if matched_kind:
+                return matched_kind
 
         return "file"
 
@@ -155,6 +171,90 @@ class RocketChatMediaBridge:
             )
         return result
 
+    def _iter_attachment_sources(
+        self,
+        payload: dict[str, Any],
+        *,
+        skip_quote_attachments: bool = False,
+    ):
+        attachments = payload.get("attachments", [])
+        if isinstance(attachments, dict):
+            attachments = [attachments]
+        if not isinstance(attachments, list):
+            return
+        for attachment in attachments:
+            if not isinstance(attachment, dict):
+                continue
+            if skip_quote_attachments and attachment.get("message_link"):
+                continue
+            yield attachment
+            yield from self._iter_attachment_sources(
+                attachment,
+                skip_quote_attachments=skip_quote_attachments,
+            )
+
+    @staticmethod
+    def _has_media_shaped_value(source: dict[str, Any], keys: tuple[str, ...]) -> bool:
+        for key in keys:
+            if source.get(key):
+                return True
+        return False
+
+    @staticmethod
+    def _normalize_attachment_list(payload: dict[str, Any]) -> list[dict[str, Any]] | None:
+        attachments = payload.get("attachments")
+        if isinstance(attachments, dict):
+            attachments = [attachments]
+        if not isinstance(attachments, list):
+            return None
+        normalized = [attachment for attachment in attachments if isinstance(attachment, dict)]
+        return normalized or None
+
+    def _can_fast_extract_attachment_descriptors(
+        self,
+        payload: dict[str, Any],
+        *,
+        skip_quote_attachments: bool,
+        include_url_images: bool,
+    ) -> list[dict[str, Any]] | None:
+        if payload.get("files") or payload.get("file") or payload.get("fileUpload"):
+            return None
+        if self._has_media_shaped_value(
+            payload,
+            (
+                "type",
+                "mimeType",
+                "contentType",
+                "image_url",
+                "imageUrl",
+                "audio_url",
+                "audioUrl",
+                "video_url",
+                "videoUrl",
+                "title_link",
+                "titleLink",
+                "url",
+                "path",
+                "link",
+            ),
+        ):
+            return None
+        if include_url_images and isinstance(payload.get("urls"), list) and payload.get("urls"):
+            return None
+
+        attachments = self._normalize_attachment_list(payload)
+        if not attachments:
+            return None
+
+        fast_candidates: list[dict[str, Any]] = []
+        for attachment in attachments:
+            if skip_quote_attachments and attachment.get("message_link"):
+                return None
+            if attachment.get("attachments") or attachment.get("files") or attachment.get("file") or attachment.get("fileUpload"):
+                return None
+            fast_candidates.append(attachment)
+        return fast_candidates or None
+
     async def extract_media_descriptors(
         self,
         payload: dict[str, Any],
@@ -164,7 +264,6 @@ class RocketChatMediaBridge:
     ) -> list[dict[str, str]]:
         media: list[dict[str, str]] = []
         seen: set[tuple[str, str]] = set()
-        candidates: list[dict[str, Any]] = []
         media_shaped_keys = (
             "type",
             "mimeType",
@@ -182,39 +281,17 @@ class RocketChatMediaBridge:
             "link",
         )
 
-        def collect_candidates(source: dict[str, Any]) -> None:
-            files_raw = source.get("files", [])
-            if isinstance(files_raw, dict):
-                candidates.append(files_raw)
-            elif isinstance(files_raw, list):
-                candidates.extend([item for item in files_raw if isinstance(item, dict)])
-
-            for key in ("file", "fileUpload"):
-                single_file = source.get(key)
-                if isinstance(single_file, dict):
-                    candidates.append(single_file)
-
-            if any(source.get(key) for key in media_shaped_keys):
-                candidates.append(source)
-
-        collect_candidates(payload)
-        for attachment in self.get_all_attachments_recursive(
-            payload,
-            skip_quote_attachments=skip_quote_attachments,
-        ):
-            collect_candidates(attachment)
-
-        for candidate in candidates:
+        async def append_candidate(candidate: dict[str, Any]) -> None:
             kind = self.classify_file_kind(candidate)
             materialized = await self._materialize_media_reference(candidate, kind)
             if not materialized:
-                continue
+                return
             file_ref = str(materialized.get("path") or materialized.get("url") or "")
             if not file_ref:
-                continue
+                return
             key = (kind, file_ref)
             if key in seen:
-                continue
+                return
             seen.add(key)
             media.append(
                 {
@@ -224,6 +301,40 @@ class RocketChatMediaBridge:
                     "path": str(materialized.get("path") or ""),
                 }
             )
+
+        async def process_source(source: dict[str, Any]) -> None:
+            files_raw = source.get("files", [])
+            if isinstance(files_raw, dict):
+                await append_candidate(files_raw)
+            elif isinstance(files_raw, list):
+                for item in files_raw:
+                    if isinstance(item, dict):
+                        await append_candidate(item)
+
+            for key in ("file", "fileUpload"):
+                single_file = source.get(key)
+                if isinstance(single_file, dict):
+                    await append_candidate(single_file)
+
+            if self._has_media_shaped_value(source, media_shaped_keys):
+                await append_candidate(source)
+
+        fast_candidates = self._can_fast_extract_attachment_descriptors(
+            payload,
+            skip_quote_attachments=skip_quote_attachments,
+            include_url_images=include_url_images,
+        )
+        if fast_candidates is not None:
+            for candidate in fast_candidates:
+                await append_candidate(candidate)
+            return media
+
+        await process_source(payload)
+        for attachment in self._iter_attachment_sources(
+            payload,
+            skip_quote_attachments=skip_quote_attachments,
+        ):
+            await process_source(attachment)
 
         if include_url_images:
             for url_obj in payload.get("urls", []):

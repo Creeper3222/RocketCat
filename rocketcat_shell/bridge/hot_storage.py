@@ -172,6 +172,48 @@ class JournalPersistenceWorker:
         done.wait()
         self._thread.join(timeout=5.0)
 
+    @classmethod
+    def load_snapshot_payload(cls, snapshot_path: Path) -> dict[str, Any] | None:
+        if not snapshot_path.exists():
+            return None
+
+        try:
+            snapshot_payload = pickle.loads(snapshot_path.read_bytes())
+        except Exception as exc:
+            logger.warning(
+                "[RocketCatShell] failed to decode runtime snapshot | path=%s | error=%s",
+                snapshot_path,
+                exc,
+            )
+            return None
+
+        if not isinstance(snapshot_payload, dict):
+            logger.warning(
+                "[RocketCatShell] ignored runtime snapshot with invalid payload type | path=%s | type=%s",
+                snapshot_path,
+                type(snapshot_payload).__name__,
+            )
+            return None
+
+        snapshot_version = snapshot_payload.get("version")
+        if snapshot_version not in (None, cls._SNAPSHOT_VERSION):
+            logger.warning(
+                "[RocketCatShell] ignored runtime snapshot with unsupported version | path=%s | version=%s | expected=%s",
+                snapshot_path,
+                snapshot_version,
+                cls._SNAPSHOT_VERSION,
+            )
+            return None
+
+        if snapshot_version is not None and not isinstance(snapshot_payload.get("state"), dict):
+            logger.warning(
+                "[RocketCatShell] ignored runtime snapshot with invalid state payload | path=%s",
+                snapshot_path,
+            )
+            return None
+
+        return snapshot_payload
+
     def _run(self) -> None:
         pending_since_flush = 0
         records_since_snapshot = 0
@@ -246,17 +288,57 @@ class JournalPersistenceWorker:
         if not journal_path.exists():
             return
         with journal_path.open("rb") as handle:
+            record_index = 0
             while True:
                 header = handle.read(4)
                 if not header:
                     break
                 if len(header) < 4:
+                    logger.warning(
+                        "[RocketCatShell] detected truncated runtime journal header | path=%s | record_index=%s",
+                        journal_path,
+                        record_index,
+                    )
                     break
                 (payload_size,) = struct.unpack("<I", header)
+                if payload_size <= 0:
+                    logger.warning(
+                        "[RocketCatShell] detected invalid runtime journal payload size | path=%s | record_index=%s | payload_size=%s",
+                        journal_path,
+                        record_index,
+                        payload_size,
+                    )
+                    break
                 payload = handle.read(payload_size)
                 if len(payload) < payload_size:
+                    logger.warning(
+                        "[RocketCatShell] detected truncated runtime journal payload | path=%s | record_index=%s | expected=%s | actual=%s",
+                        journal_path,
+                        record_index,
+                        payload_size,
+                        len(payload),
+                    )
                     break
-                yield pickle.loads(payload)
+                try:
+                    record = pickle.loads(payload)
+                except Exception as exc:
+                    logger.warning(
+                        "[RocketCatShell] failed to decode runtime journal record | path=%s | record_index=%s | error=%s",
+                        journal_path,
+                        record_index,
+                        exc,
+                    )
+                    break
+                if not isinstance(record, dict):
+                    logger.warning(
+                        "[RocketCatShell] ignored runtime journal record with invalid payload type | path=%s | record_index=%s | type=%s",
+                        journal_path,
+                        record_index,
+                        type(record).__name__,
+                    )
+                    break
+                record_index += 1
+                yield record
 
 
 class RuntimeStateEngine:
@@ -908,11 +990,31 @@ class RuntimeStateEngine:
 
     @staticmethod
     def _normalize_message_entry(entry: dict[str, Any]) -> dict[str, Any]:
-        return deepcopy(entry)
+        return RuntimeStateEngine._clone_json_like_mapping(entry)
 
     @staticmethod
     def _clone_message_entry(entry: dict[str, Any]) -> dict[str, Any]:
-        return deepcopy(entry)
+        return RuntimeStateEngine._clone_json_like_mapping(entry)
+
+    @staticmethod
+    def _clone_json_like_mapping(entry: dict[str, Any] | None) -> dict[str, Any]:
+        if not isinstance(entry, dict):
+            return {}
+        return {
+            str(key): RuntimeStateEngine._clone_json_like_value(value)
+            for key, value in entry.items()
+        }
+
+    @staticmethod
+    def _clone_json_like_value(value: Any) -> Any:
+        if isinstance(value, dict):
+            return {
+                str(key): RuntimeStateEngine._clone_json_like_value(item)
+                for key, item in value.items()
+            }
+        if isinstance(value, list):
+            return [RuntimeStateEngine._clone_json_like_value(item) for item in value]
+        return value
 
     @staticmethod
     def _normalize_pair_key(pair_key: Any) -> tuple[str, str]:
@@ -1085,9 +1187,9 @@ def build_runtime_hot_stores(
     journal_path = data_dir / "runtime.journal.bin"
 
     state_engine = RuntimeStateEngine(message_window_size=message_window_size)
-    if snapshot_path.exists():
+    snapshot_payload = JournalPersistenceWorker.load_snapshot_payload(snapshot_path)
+    if snapshot_payload is not None:
         try:
-            snapshot_payload = pickle.loads(snapshot_path.read_bytes())
             state_engine.load_snapshot_payload(snapshot_payload)
         except Exception as exc:
             logger.warning(

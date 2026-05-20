@@ -142,9 +142,22 @@ class ShellWebUI:
     def url(self) -> str:
         return f"http://{self.host}:{self.port}/"
 
-    def _apply_access_password(self, password: str) -> None:
-        self._access_password = str(password or "").strip()
-        self._auth_required = bool(self._access_password)
+    async def _apply_access_password(self, password: str) -> None:
+        next_password = str(password or "").strip()
+        next_auth_required = bool(next_password)
+        changed = (
+            next_password != self._access_password
+            or next_auth_required != self._auth_required
+        )
+        self._access_password = next_password
+        self._auth_required = next_auth_required
+        if not changed:
+            return
+
+        async with self._session_lock:
+            self._sessions.clear()
+        async with self._attempt_lock:
+            self._failed_attempts.clear()
 
     def _setup_routes(self) -> None:
         @self._app.middleware("http")
@@ -171,6 +184,7 @@ class ShellWebUI:
         )
         self._app.add_api_route("/", self._handle_index, methods=["GET"])
         self._app.add_api_route("/api/status", self._handle_status, methods=["GET"])
+        self._app.add_api_route("/api/diagnostics", self._handle_diagnostics, methods=["GET"])
         self._app.add_api_route("/api/login", self._handle_login, methods=["POST"])
         self._app.add_api_route("/api/logout", self._handle_logout, methods=["POST"])
         self._app.add_api_route("/api/basic-info", self._handle_basic_info, methods=["GET"])
@@ -506,6 +520,9 @@ class ShellWebUI:
     async def _handle_status(self) -> dict[str, Any]:
         return await self.manager.get_webui_state()
 
+    async def _handle_diagnostics(self) -> dict[str, Any]:
+        return await self.manager.get_diagnostics_state()
+
     async def _handle_basic_info(self) -> dict[str, Any]:
         return await self.manager.get_basic_info_state()
 
@@ -529,7 +546,7 @@ class ShellWebUI:
             raise HTTPException(status_code=500, detail="更新 shell 设置失败") from exc
 
         if hasattr(self.manager, "settings") and getattr(self.manager, "settings") is not None:
-            self._apply_access_password(self.manager.settings.webui_access_password)
+            await self._apply_access_password(self.manager.settings.webui_access_password)
         return updated
 
     async def _handle_export_configuration(self) -> dict[str, Any]:
@@ -549,7 +566,7 @@ class ShellWebUI:
             raise HTTPException(status_code=500, detail="导入配置失败") from exc
 
         if hasattr(self.manager, "settings") and getattr(self.manager, "settings") is not None:
-            self._apply_access_password(self.manager.settings.webui_access_password)
+            await self._apply_access_password(self.manager.settings.webui_access_password)
         return {"ok": True, "result": result}
 
     async def _handle_rebuild_message_indexes(self) -> dict[str, Any]:
