@@ -7,13 +7,30 @@
 
 本项目的目标不是继续做一个“宿主里的桥接插件”，而是把 RocketCat 发展成一套真正独立的 `Rocket.Chat <-> OneBot v11` 桥接软件。
 
-> 当前 README 对应版本为 `v0.1.6`。`v0.1.3` 是破坏性架构重构基线，`v0.1.4` 统一收口性能优化，`v0.1.5` 补齐了内置指令与运维增强，而 `v0.1.6` 继续把重点推进到更实用的运行诊断可观测性、真实负载 benchmark 和入站热路径性能收口。
+> 当前 README 对应版本为 `v0.1.7`。`v0.1.3` 是破坏性架构重构基线，`v0.1.4` 统一收口性能优化，`v0.1.5` 补齐了内置指令与运维增强，`v0.1.6` 推进运行诊断可观测性和入站热路径性能收口，而 `v0.1.7` 开始补齐面向 Docker 迁移的内置文件管理能力。
 
 这意味着：
 
 - RocketCatShell 自己拥有 `config/`、`data/`、`logs/` 目录边界。
 - RocketCatShell 自己提供本地 WebUI、登录认证、Bot 管理和插件管理。
 - RocketCatShell 仍然可以作为 OneBot reverse WebSocket 客户端与 AstrBot 协同，但不再依赖 AstrBot 插件宿主才能运行。
+
+---
+
+## v0.1.7（内置文件管理更新）
+
+`v0.1.7` 的首要目标是为 RocketCatShell 增加类似 NapCat 的内置文件管理入口，并为后续 Docker 版迁移做准备。用户可以在 WebUI 内浏览 RocketCatShell 项目根目录、进入子目录、返回上级目录、刷新文件列表、打开 UTF-8 文本文件进行预览，并在根目录边界内新建文件、创建目录、上传文件、重命名、批量删除、移动和下载文件。
+
+- 新增 `文件管理` WebUI 页面。文件管理边界固定为 RocketCatShell 项目根目录，前后端 API 都只接受根目录内的相对路径，拒绝访问 `..`、系统绝对路径、盘符路径或符号链接越界目标。
+- 新增文件 API：`GET /api/files` 用于列目录，`POST /api/files/read` 用于文本预览，`POST /api/files/create` 用于新建文件或目录，`POST /api/files/upload` 用于上传文件，`POST /api/files/rename` 用于重命名单个项目，`POST /api/files/delete` 用于删除选中项目，`POST /api/files/move` 用于移动选中项目，`GET /api/files/download` 用于单项下载，`POST /api/files/download` 用于将选中项目打包为 `files.zip` 下载。当前阶段仍不提供保存编辑能力。
+- 文件表格新增左侧复选框，多选后才会展开批量删除、移动和下载按钮；每一行也新增 `操作` 列，可单独重命名、移动、复制相对路径、下载或删除该项。删除前会弹出二次确认，移动会弹出目标目录树，只允许选择 RocketCatShell 根目录边界内的目录，批量下载会把选中的文件和目录一起封装为 `files.zip`。
+- 新建功能支持在 WebUI 弹窗中选择 `文件` 或 `目录`；同名目标会被拒绝，避免覆盖现有项目。
+- 上传功能支持拖拽文件到上传框，也支持点击按钮打开系统文件选择器。单次最多上传 20 个文件，单文件上限 100 MiB；上传文件夹结构时会在项目根目录边界内自动创建所需父目录，同名上传文件会自动追加随机后缀，避免覆盖。
+- 文本预览最多读取前 `1 MiB` 内容，超出时会在页面提示内容已截断；二进制文件和非 UTF-8 文本不会返回文件内容。
+- 对明确的敏感持久化数据文件增加二次鉴权，包括 `config/shell.json`、`config/bots.json`、`config/plugins_config/*.json` 和 `data/bots/**/runtime_state.json`。鉴权密码复用 WebUI 登录认证 / 文件管理鉴权密码，密码只通过请求体提交，不放入 URL。
+- `基础设置` 中的 WebUI 密码文案已更新为 `WebUI 登录认证 / 文件管理鉴权密码`，强调同一个密码同时用于登录 WebUI 和打开敏感持久化数据文件。
+
+升级到 `v0.1.7` 不需要迁移现有配置或运行态数据。如果浏览器已经打开旧版 WebUI，刷新页面以获取最新静态资源即可。
 
 ---
 
@@ -236,8 +253,9 @@ RocketCatShell 启动后会在本地启动一个独立 WebUI，默认监听 `127
 - `网络配置`：查看 Bot 状态、创建 / 编辑 / 删除 Bot。
 - `基础信息`：查看每个 Bot 的账号信息、OneBot self ID、Rocket.Chat 服务器品牌头像和服务器名称。
 - `猫猫日志`：查看 RocketCatShell 与 `RocketCatPerf` 运行日志，可按级别和 `Perf` 开关过滤，并支持清空日志。
-- `基础设置`：管理 WebUI 登录密码、WebUI 端口、消息映射窗口条数上限，以及配置导出 / 导入。
+- `基础设置`：管理 WebUI 登录认证 / 文件管理鉴权密码、WebUI 端口、消息映射窗口条数上限，以及配置导出 / 导入。
 - `插件管理`：管理 RocketCatShell 本地插件，包括启停、设置、重载和卸载。
+- `文件管理`：只读浏览 RocketCatShell 项目根目录内文件，支持目录进入 / 返回和 UTF-8 文本预览；敏感持久化数据文件需要再次输入 WebUI 登录认证 / 文件管理鉴权密码。
 
 ### WebUI 认证
 <p align="center">
@@ -245,16 +263,16 @@ RocketCatShell 启动后会在本地启动一个独立 WebUI，默认监听 `127
 </p>
 
 - RocketCatShell 默认启用密码访问。
-- 初始登录密码为 `123456`。
+- 初始 WebUI 登录认证 / 文件管理鉴权密码为 `123456`。
 - 后端提供登录、登出、Cookie 会话和受保护 API 访问控制。
 - 会话失效时，前端会自动跳回登录页。
-- WebUI 登录密码不允许设置为空。
+- WebUI 登录认证 / 文件管理鉴权密码不允许设置为空。
 
 ### 配置导出 / 导入
 
 - 导出默认文件名为 `rocketcat_config.json`。
 - 顶层判别字段为 `Is rocketcat config`。
-- 导出内容包含所有 Bot 设置（包括 `room_info_cache_ttl_seconds` 与 `perf_trace_enabled`）、WebUI 登录密码、WebUI 端口、消息映射窗口条数上限和本地插件主配置。
+- 导出内容包含所有 Bot 设置（包括 `room_info_cache_ttl_seconds` 与 `perf_trace_enabled`）、WebUI 登录认证 / 文件管理鉴权密码、WebUI 端口、消息映射窗口条数上限和本地插件主配置。
 - 导入时会先校验判别字段；若不是 RocketCatShell 配置文件，则会返回失败提示。
 
 ---
@@ -471,7 +489,7 @@ http://127.0.0.1:5751/
 |--------|------|
 | `webui_host` | WebUI 监听主机，默认 `127.0.0.1`。 |
 | `webui_port` | WebUI 监听端口，默认 `5751`。 |
-| `webui_access_password` | WebUI 登录密码，默认 `123456`。 |
+| `webui_access_password` | WebUI 登录认证 / 文件管理鉴权密码，默认 `123456`。该密码同时用于登录 WebUI 和打开敏感持久化数据文件。 |
 | `message_index_max_entries` | 最大消息映射窗口条数，默认 `1000`；超出后会清理最早映射，并在达到重置阈值后自动重排当前窗口。 |
 | `log_level` | 日志级别，默认 `INFO`。 |
 | `auto_open_browser` | 启动后是否自动打开浏览器。 |

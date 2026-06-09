@@ -11,11 +11,4 @@ __pycache__/
 *.sqlite
 *.sqlite3
 *.pid
-*.lock.venv/
-config/
-logs/
-data/bots/
-data/plugin_data/
-__pycache__/
-*.py[cod]
-.pytest_cache/
+*.lock
