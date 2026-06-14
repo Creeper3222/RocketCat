@@ -19,15 +19,17 @@
 
 ## v0.1.7（内置文件管理更新）
 
-`v0.1.7` 的首要目标是为 RocketCatShell 增加类似 NapCat 的内置文件管理入口，并为后续 Docker 版迁移做准备。用户可以在 WebUI 内浏览 RocketCatShell 项目根目录、进入子目录、返回上级目录、刷新文件列表、打开 UTF-8 文本文件进行预览，并在根目录边界内新建文件、创建目录、上传文件、重命名、批量删除、移动和下载文件。
+`v0.1.7` 的首要目标是为 RocketCatShell 增加类似 NapCat 的内置文件管理入口，并为后续 Docker 版迁移做准备。用户可以在 WebUI 内浏览 RocketCatShell 项目根目录、进入子目录、返回上级目录、刷新文件列表、打开 UTF-8 文本文件进行查看或编辑、预览图片文件，并在根目录边界内新建文件、创建目录、上传文件、重命名、批量删除、移动和下载文件。
 
 - 新增 `文件管理` WebUI 页面。文件管理边界固定为 RocketCatShell 项目根目录，前后端 API 都只接受根目录内的相对路径，拒绝访问 `..`、系统绝对路径、盘符路径或符号链接越界目标。
-- 新增文件 API：`GET /api/files` 用于列目录，`POST /api/files/read` 用于文本预览，`POST /api/files/create` 用于新建文件或目录，`POST /api/files/upload` 用于上传文件，`POST /api/files/rename` 用于重命名单个项目，`POST /api/files/delete` 用于删除选中项目，`POST /api/files/move` 用于移动选中项目，`GET /api/files/download` 用于单项下载，`POST /api/files/download` 用于将选中项目打包为 `files.zip` 下载。当前阶段仍不提供保存编辑能力。
+- 新增文件 API：`GET /api/files` 用于列目录，`POST /api/files/read` 用于文本预览，`POST /api/files/write` 用于保存允许编辑的文本文件，`POST /api/files/create` 用于新建文件或目录，`POST /api/files/upload` 用于上传文件，`POST /api/files/rename` 用于重命名单个项目，`POST /api/files/delete` 用于删除选中项目，`POST /api/files/move` 用于移动选中项目，`GET /api/files/download` 用于单项下载，`POST /api/files/download` 用于将选中项目打包为 `files.zip` 下载。
 - 文件表格新增左侧复选框，多选后才会展开批量删除、移动和下载按钮；每一行也新增 `操作` 列，可单独重命名、移动、复制相对路径、下载或删除该项。删除前会弹出二次确认，移动会弹出目标目录树，只允许选择 RocketCatShell 根目录边界内的目录，批量下载会把选中的文件和目录一起封装为 `files.zip`。
 - 新建功能支持在 WebUI 弹窗中选择 `文件` 或 `目录`；同名目标会被拒绝，避免覆盖现有项目。
 - 上传功能支持拖拽文件到上传框，也支持点击按钮打开系统文件选择器。单次最多上传 20 个文件，单文件上限 100 MiB；上传文件夹结构时会在项目根目录边界内自动创建所需父目录，同名上传文件会自动追加随机后缀，避免覆盖。
-- 文本预览最多读取前 `1 MiB` 内容，超出时会在页面提示内容已截断；二进制文件和非 UTF-8 文本不会返回文件内容。
-- 对明确的敏感持久化数据文件增加二次鉴权，包括 `config/shell.json`、`config/bots.json`、`config/plugins_config/*.json` 和 `data/bots/**/runtime_state.json`。鉴权密码复用 WebUI 登录认证 / 文件管理鉴权密码，密码只通过请求体提交，不放入 URL。
+- 文本预览最多读取前 `1 MiB` 内容，超出时会在页面提示内容已截断；允许编辑的普通文本文件可在 WebUI 内修改并保存，保存前会弹出二次确认；二进制文件和非 UTF-8 文本不会返回文件内容。
+- RocketCatShell 核心源码、WebUI 静态资源、工具脚本和两个内置插件源码只能查看，不能通过文件管理修改、移动或删除；用户在 `data/resource` 等非保护目录中创建的 `.py` 或其他文本文件仍可自由编辑。
+- 图片文件会在文件列表中显示缩略图，点击后可在 WebUI 内放大预览；图片预览同样只允许读取 RocketCatShell 根目录边界内的文件。
+- 对明确的敏感持久化数据文件增加二次鉴权，包括 `config/shell.json`、`config/bots.json`、`config/plugins_config/*.json` 和 `data/bots/**/runtime_state.json`。鉴权密码复用 WebUI 登录认证 / 文件管理鉴权密码，密码只通过请求体提交，不放入 URL；鉴权文件保存前会再次提示修改风险。
 - `基础设置` 中的 WebUI 密码文案已更新为 `WebUI 登录认证 / 文件管理鉴权密码`，强调同一个密码同时用于登录 WebUI 和打开敏感持久化数据文件。
 
 升级到 `v0.1.7` 不需要迁移现有配置或运行态数据。如果浏览器已经打开旧版 WebUI，刷新页面以获取最新静态资源即可。
@@ -255,7 +257,7 @@ RocketCatShell 启动后会在本地启动一个独立 WebUI，默认监听 `127
 - `猫猫日志`：查看 RocketCatShell 与 `RocketCatPerf` 运行日志，可按级别和 `Perf` 开关过滤，并支持清空日志。
 - `基础设置`：管理 WebUI 登录认证 / 文件管理鉴权密码、WebUI 端口、消息映射窗口条数上限，以及配置导出 / 导入。
 - `插件管理`：管理 RocketCatShell 本地插件，包括启停、设置、重载和卸载。
-- `文件管理`：只读浏览 RocketCatShell 项目根目录内文件，支持目录进入 / 返回和 UTF-8 文本预览；敏感持久化数据文件需要再次输入 WebUI 登录认证 / 文件管理鉴权密码。
+- `文件管理`：浏览 RocketCatShell 项目根目录内文件，支持目录进入 / 返回、UTF-8 文本查看与允许范围内的编辑保存、图片预览、上传、重命名、移动、删除和打包下载；敏感持久化数据文件需要再次输入 WebUI 登录认证 / 文件管理鉴权密码。
 
 ### WebUI 认证
 <p align="center">

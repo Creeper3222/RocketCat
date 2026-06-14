@@ -4,6 +4,7 @@ import asyncio
 import codecs
 import io
 import logging
+import mimetypes
 import secrets
 import shutil
 import socket
@@ -30,6 +31,33 @@ _FILE_PREVIEW_LIMIT_BYTES = 1024 * 1024
 _FILE_UPLOAD_CHUNK_BYTES = 1024 * 1024
 _FILE_UPLOAD_LIMIT_BYTES = 100 * 1024 * 1024
 _FILE_UPLOAD_MAX_FILES = 20
+_FILE_EDIT_LIMIT_BYTES = 1024 * 1024
+_PROTECTED_FILE_EXACT_PATHS = {
+    ("launcher.bat",),
+    ("requirements.txt",),
+}
+_PROTECTED_FILE_ROOTS = {
+    ("rocketcat_shell",),
+    ("tools",),
+    ("data", "plugins", "rocketcat_plugin_adapt_iamthinking"),
+    ("data", "plugins", "rocketcat_plugin_built_in_command"),
+}
+_IMAGE_PREVIEW_EXTENSIONS = {
+    ".bmp",
+    ".gif",
+    ".jpeg",
+    ".jpg",
+    ".png",
+    ".webp",
+}
+_IMAGE_PREVIEW_MEDIA_TYPES = {
+    ".bmp": "image/bmp",
+    ".gif": "image/gif",
+    ".jpeg": "image/jpeg",
+    ".jpg": "image/jpeg",
+    ".png": "image/png",
+    ".webp": "image/webp",
+}
 _BINARY_PREVIEW_EXTENSIONS = {
     ".7z",
     ".bin",
@@ -42,7 +70,6 @@ _BINARY_PREVIEW_EXTENSIONS = {
     ".jpg",
     ".mp3",
     ".mp4",
-    ".pdf",
     ".png",
     ".pyc",
     ".rar",
@@ -245,11 +272,13 @@ class ShellWebUI:
         self._app.add_api_route("/api/logs/clear", self._handle_clear_logs, methods=["POST"])
         self._app.add_api_route("/api/files", self._handle_list_files, methods=["GET"])
         self._app.add_api_route("/api/files/read", self._handle_read_file, methods=["POST"])
+        self._app.add_api_route("/api/files/write", self._handle_write_file, methods=["POST"])
         self._app.add_api_route("/api/files/create", self._handle_create_file_item, methods=["POST"])
         self._app.add_api_route("/api/files/upload", self._handle_upload_files, methods=["POST"])
         self._app.add_api_route("/api/files/delete", self._handle_delete_file_items, methods=["POST"])
         self._app.add_api_route("/api/files/move", self._handle_move_file_items, methods=["POST"])
         self._app.add_api_route("/api/files/rename", self._handle_rename_file_item, methods=["POST"])
+        self._app.add_api_route("/api/files/preview", self._handle_preview_file_item, methods=["GET"])
         self._app.add_api_route("/api/files/download", self._handle_download_file_item, methods=["GET"])
         self._app.add_api_route("/api/files/download", self._handle_download_file_items, methods=["POST"])
         self._app.add_api_route("/api/bots", self._handle_list_bots, methods=["GET"])
@@ -737,6 +766,78 @@ class ShellWebUI:
             "content": content,
             "encoding": "utf-8",
             "truncated": has_more,
+            "requires_password": self._is_sensitive_file_manager_path(target_path),
+            "is_protected": self._is_protected_file_manager_path(target_path),
+            "can_edit": self._can_edit_file_manager_path(target_path, stat_result=stat_result, truncated=has_more),
+        }
+
+    async def _handle_write_file(
+        self,
+        request: Request,
+        payload: dict[str, Any] | None = Body(default=None),
+    ) -> dict[str, Any]:
+        payload = payload or {}
+        target_path = self._resolve_file_manager_path(str(payload.get("path") or ""))
+        if not target_path.exists():
+            raise HTTPException(status_code=404, detail="文件不存在")
+        if not target_path.is_file():
+            raise HTTPException(status_code=400, detail="目标路径不是文件")
+        if self._is_protected_file_manager_path(target_path):
+            raise HTTPException(status_code=403, detail="RocketCatShell 核心源码和内置插件源码只允许查看，不能修改")
+
+        stat_result = target_path.stat()
+        if not self._can_edit_file_manager_path(target_path, stat_result=stat_result, truncated=False):
+            raise HTTPException(status_code=415, detail="当前文件不支持在线编辑")
+
+        try:
+            existing_bytes = target_path.read_bytes()
+        except OSError as exc:
+            logger.warning("[RocketCatShell] 文件管理读取待保存文件失败: path=%s err=%r", target_path, exc)
+            raise HTTPException(status_code=500, detail="读取文件失败") from exc
+        if self._looks_like_binary(existing_bytes):
+            raise HTTPException(status_code=415, detail="当前文件不支持在线编辑")
+        try:
+            existing_bytes.decode("utf-8-sig")
+        except UnicodeDecodeError as exc:
+            raise HTTPException(status_code=415, detail="当前阶段仅支持 UTF-8 文本文件编辑") from exc
+
+        if self._is_sensitive_file_manager_path(target_path):
+            await self._verify_file_manager_password(
+                request,
+                str(payload.get("password") or ""),
+            )
+
+        content = payload.get("content")
+        if not isinstance(content, str):
+            raise HTTPException(status_code=400, detail="保存内容必须是文本")
+
+        encoded_content = content.encode("utf-8")
+        if len(encoded_content) > _FILE_EDIT_LIMIT_BYTES:
+            raise HTTPException(
+                status_code=413,
+                detail=f"在线编辑内容不能超过 {_FILE_EDIT_LIMIT_BYTES // (1024 * 1024)} MiB",
+            )
+
+        temp_path = target_path.with_name(f".{target_path.name}.{uuid.uuid4().hex}.tmp")
+        try:
+            temp_path.write_bytes(encoded_content)
+            temp_path.replace(target_path)
+            stat_result = target_path.stat()
+        except OSError as exc:
+            try:
+                temp_path.unlink(missing_ok=True)
+            except OSError:
+                pass
+            logger.warning("[RocketCatShell] 文件管理保存文件失败: path=%s err=%r", target_path, exc)
+            raise HTTPException(status_code=500, detail="保存文件失败") from exc
+
+        return {
+            "ok": True,
+            "path": self._file_manager_relative_path(target_path),
+            "name": target_path.name,
+            "size": stat_result.st_size,
+            "mtime": datetime.fromtimestamp(stat_result.st_mtime).isoformat(timespec="seconds"),
+            "item": self._serialize_file_item(target_path, stat_result=stat_result),
         }
 
     async def _handle_create_file_item(
@@ -755,6 +856,8 @@ class ShellWebUI:
         target_path = self._resolve_file_manager_path(raw_path)
         if target_path == self._file_root:
             raise HTTPException(status_code=400, detail="不能覆盖 RocketCatShell 根目录")
+        if self._is_protected_mutation_path(target_path):
+            raise HTTPException(status_code=403, detail="RocketCatShell 核心源码和内置插件源码不允许修改")
 
         parent_path = target_path.parent.resolve()
         if parent_path != self._file_root and not parent_path.is_relative_to(self._file_root):
@@ -809,6 +912,8 @@ class ShellWebUI:
                 uploaded_relative_path,
             )
             requested_path = self._resolve_file_manager_path(combined_relative_path)
+            if self._is_protected_mutation_path(requested_path):
+                raise HTTPException(status_code=403, detail="RocketCatShell 核心源码和内置插件源码不允许修改")
             parent_path = requested_path.parent.resolve()
             if parent_path != self._file_root and not parent_path.is_relative_to(self._file_root):
                 raise HTTPException(status_code=403, detail="上传路径不能越过 RocketCatShell 根目录")
@@ -860,6 +965,8 @@ class ShellWebUI:
         deleted_items: list[dict[str, Any]] = []
         try:
             for target_path in target_paths:
+                if self._is_protected_mutation_path(target_path):
+                    raise HTTPException(status_code=403, detail="RocketCatShell 核心源码和内置插件源码不允许删除")
                 item_payload = {
                     "path": self._file_manager_relative_path(target_path),
                     "name": target_path.name,
@@ -904,9 +1011,13 @@ class ShellWebUI:
         move_plan: list[tuple[Path, Path]] = []
         seen_destinations: set[Path] = set()
         for source_path in target_paths:
+            if self._is_protected_mutation_path(source_path):
+                raise HTTPException(status_code=403, detail="RocketCatShell 核心源码和内置插件源码不允许移动")
             destination_path = (target_directory / source_path.name).resolve()
             if destination_path != self._file_root and not destination_path.is_relative_to(self._file_root):
                 raise HTTPException(status_code=403, detail="移动目标不能越过 RocketCatShell 根目录")
+            if self._is_protected_mutation_path(destination_path):
+                raise HTTPException(status_code=403, detail="RocketCatShell 核心源码和内置插件源码不允许移动")
             if source_path == target_directory:
                 raise HTTPException(status_code=400, detail="不能移动目录到自身")
             if source_path.is_dir() and destination_path.is_relative_to(source_path):
@@ -945,6 +1056,8 @@ class ShellWebUI:
             raise HTTPException(status_code=400, detail="不能重命名 RocketCatShell 根目录")
         if not source_path.exists():
             raise HTTPException(status_code=404, detail="文件或目录不存在")
+        if self._is_protected_mutation_path(source_path):
+            raise HTTPException(status_code=403, detail="RocketCatShell 核心源码和内置插件源码不允许重命名")
 
         new_name = self._normalize_file_manager_name(
             str(payload.get("name") or payload.get("new_name") or "")
@@ -952,6 +1065,8 @@ class ShellWebUI:
         destination_path = (source_path.parent / new_name).resolve()
         if destination_path != self._file_root and not destination_path.is_relative_to(self._file_root):
             raise HTTPException(status_code=403, detail="重命名目标不能越过 RocketCatShell 根目录")
+        if self._is_protected_mutation_path(destination_path):
+            raise HTTPException(status_code=403, detail="RocketCatShell 核心源码和内置插件源码不允许重命名")
         if destination_path.exists():
             raise HTTPException(status_code=409, detail="同名文件或目录已存在")
 
@@ -966,6 +1081,27 @@ class ShellWebUI:
             "ok": True,
             "item": self._serialize_file_item(destination_path, stat_result=stat_result),
         }
+
+    async def _handle_preview_file_item(self, path: str = Query(default="")) -> FileResponse:
+        target_path = self._resolve_file_manager_path(path)
+        if not target_path.exists():
+            raise HTTPException(status_code=404, detail="文件不存在")
+        if not target_path.is_file():
+            raise HTTPException(status_code=400, detail="目标路径不是文件")
+
+        extension = target_path.suffix.lower()
+        if extension not in _IMAGE_PREVIEW_EXTENSIONS:
+            raise HTTPException(status_code=415, detail="当前仅支持图片文件预览")
+
+        media_type = _IMAGE_PREVIEW_MEDIA_TYPES.get(extension)
+        if not media_type:
+            media_type = mimetypes.guess_type(target_path.name)[0] or "application/octet-stream"
+
+        return FileResponse(
+            target_path,
+            media_type=media_type,
+            headers={"Cache-Control": "no-store"},
+        )
 
     async def _handle_download_file_item(self, path: str = Query(default="")) -> Response:
         target_path = self._resolve_file_manager_path(path)
@@ -1200,12 +1336,62 @@ class ShellWebUI:
             return ""
         return target_path.relative_to(self._file_root).as_posix()
 
+    def _file_manager_parts(self, target_path: Path) -> tuple[str, ...]:
+        relative_path = self._file_manager_relative_path(target_path)
+        return tuple(part.lower() for part in relative_path.split("/") if part)
+
+    def _is_protected_file_manager_path(self, target_path: Path) -> bool:
+        parts = self._file_manager_parts(target_path)
+        if parts in _PROTECTED_FILE_EXACT_PATHS:
+            return True
+        return any(
+            len(parts) >= len(root_parts) and parts[: len(root_parts)] == root_parts
+            for root_parts in _PROTECTED_FILE_ROOTS
+        )
+
+    def _contains_protected_file_manager_path(self, target_path: Path) -> bool:
+        parts = self._file_manager_parts(target_path)
+        if not parts:
+            return True
+        return any(
+            len(parts) < len(root_parts) and root_parts[: len(parts)] == parts
+            for root_parts in _PROTECTED_FILE_ROOTS
+        )
+
+    def _is_protected_mutation_path(self, target_path: Path) -> bool:
+        return self._is_protected_file_manager_path(target_path) or (
+            target_path.exists()
+            and target_path.is_dir()
+            and self._contains_protected_file_manager_path(target_path)
+        )
+
+    def _can_edit_file_manager_path(
+        self,
+        target_path: Path,
+        *,
+        stat_result: Any,
+        truncated: bool = False,
+    ) -> bool:
+        if target_path.is_dir() or self._is_protected_file_manager_path(target_path):
+            return False
+        if truncated or int(getattr(stat_result, "st_size", 0)) > _FILE_EDIT_LIMIT_BYTES:
+            return False
+        extension = target_path.suffix.lower()
+        return extension not in _BINARY_PREVIEW_EXTENSIONS and extension not in _IMAGE_PREVIEW_EXTENSIONS
+
     def _serialize_file_item(self, target_path: Path, *, stat_result: Any) -> dict[str, Any]:
         is_directory = target_path.is_dir()
         extension = "" if is_directory else target_path.suffix.lower()
         preview_type = "directory" if is_directory else "text"
-        if extension in _BINARY_PREVIEW_EXTENSIONS:
+        if extension in _IMAGE_PREVIEW_EXTENSIONS:
+            preview_type = "image"
+        elif extension in _BINARY_PREVIEW_EXTENSIONS:
             preview_type = "binary"
+        is_protected = self._is_protected_file_manager_path(target_path)
+        can_edit = preview_type == "text" and self._can_edit_file_manager_path(
+            target_path,
+            stat_result=stat_result,
+        )
         return {
             "name": target_path.name,
             "path": self._file_manager_relative_path(target_path),
@@ -1215,11 +1401,12 @@ class ShellWebUI:
             "extension": extension,
             "preview_type": preview_type,
             "requires_password": self._is_sensitive_file_manager_path(target_path),
+            "is_protected": is_protected,
+            "can_edit": can_edit,
         }
 
     def _is_sensitive_file_manager_path(self, target_path: Path) -> bool:
-        relative_path = self._file_manager_relative_path(target_path)
-        parts = tuple(part.lower() for part in relative_path.split("/") if part)
+        parts = self._file_manager_parts(target_path)
         if parts in {("config", "shell.json"), ("config", "bots.json")}:
             return True
         if len(parts) == 3 and parts[0] == "config" and parts[1] == "plugins_config":

@@ -19,6 +19,7 @@ const DEFAULT_FORM = {
 };
 
 const ROCKETCAT_CONFIG_MARKER_FIELD = 'Is rocketcat config';
+const FILE_IMAGE_EXTENSIONS = new Set(['.bmp', '.gif', '.jpeg', '.jpg', '.png', '.webp']);
 
 const state = {
   editingId: null,
@@ -87,7 +88,15 @@ const state = {
     pendingMovePaths: null,
     pendingRenameItem: null,
     pendingAuthItem: null,
+    pendingAuthMode: 'edit',
     previewItem: null,
+    editingFile: null,
+    pendingSave: false,
+    imageViewer: {
+      visible: false,
+      items: [],
+      index: 0,
+    },
   },
 };
 
@@ -233,6 +242,26 @@ const elements = {
   filePreviewContent: document.getElementById('filePreviewContent'),
   filePreviewCloseButton: document.getElementById('filePreviewCloseButton'),
   filePreviewCancelButton: document.getElementById('filePreviewCancelButton'),
+  fileEditModal: document.getElementById('fileEditModal'),
+  fileEditPathChip: document.getElementById('fileEditPathChip'),
+  fileEditNotice: document.getElementById('fileEditNotice'),
+  fileEditLineNumbers: document.getElementById('fileEditLineNumbers'),
+  fileEditContentInput: document.getElementById('fileEditContentInput'),
+  fileEditCloseButton: document.getElementById('fileEditCloseButton'),
+  fileEditCancelButton: document.getElementById('fileEditCancelButton'),
+  fileEditSaveButton: document.getElementById('fileEditSaveButton'),
+  fileSaveConfirmModal: document.getElementById('fileSaveConfirmModal'),
+  fileSaveConfirmTitle: document.getElementById('fileSaveConfirmTitle'),
+  fileSaveConfirmMessage: document.getElementById('fileSaveConfirmMessage'),
+  fileSaveConfirmCloseButton: document.getElementById('fileSaveConfirmCloseButton'),
+  fileSaveConfirmCancelButton: document.getElementById('fileSaveConfirmCancelButton'),
+  fileSaveConfirmSubmitButton: document.getElementById('fileSaveConfirmSubmitButton'),
+  fileImageViewer: document.getElementById('fileImageViewer'),
+  fileImageViewerCount: document.getElementById('fileImageViewerCount'),
+  fileImageViewerImage: document.getElementById('fileImageViewerImage'),
+  fileImageViewerCloseButton: document.getElementById('fileImageViewerCloseButton'),
+  fileImageViewerPrevButton: document.getElementById('fileImageViewerPrevButton'),
+  fileImageViewerNextButton: document.getElementById('fileImageViewerNextButton'),
   fileCreateModal: document.getElementById('fileCreateModal'),
   fileCreateNameInput: document.getElementById('fileCreateNameInput'),
   fileCreateCloseButton: document.getElementById('fileCreateCloseButton'),
@@ -1487,6 +1516,24 @@ function joinFilePath(basePath = '', childPath = '') {
   return child || base;
 }
 
+function getFileExtension(item = {}) {
+  const extension = String(item.extension || '').toLowerCase();
+  if (extension) {
+    return extension;
+  }
+  const name = String(item.name || item.path || '');
+  const dotIndex = name.lastIndexOf('.');
+  return dotIndex >= 0 ? name.slice(dotIndex).toLowerCase() : '';
+}
+
+function isFileImage(item = {}) {
+  return item.preview_type === 'image' || FILE_IMAGE_EXTENSIONS.has(getFileExtension(item));
+}
+
+function buildFilePreviewUrl(pathValue = '') {
+  return `/api/files/preview?path=${encodeURIComponent(normalizeFilePath(pathValue))}`;
+}
+
 function formatFileSize(value, isDirectory = false) {
   if (isDirectory) {
     return '-';
@@ -1549,6 +1596,76 @@ function validateFileBaseName(value = '') {
   return name;
 }
 
+function getFileIconVariant(item) {
+  const extension = getFileExtension(item);
+  if (extension === '.txt') {
+    return 'text';
+  }
+  if (extension === '.json' || extension === '.py' || extension === '.md') {
+    return 'code';
+  }
+  if (extension === '.pdf') {
+    return 'pdf';
+  }
+  if (extension === '.doc' || extension === '.docx') {
+    return 'word';
+  }
+  return 'generic';
+}
+
+function renderDocumentFileIcon(variant) {
+  const icons = {
+    generic: `
+      <span class="file-icon file-icon--file file-icon--file-generic" aria-hidden="true">
+        <svg viewBox="0 0 24 24" focusable="false">
+          <path d="M6.8 2.8h7.1l5.3 5.3v13.1H6.8c-1.1 0-2-.9-2-2V4.8c0-1.1.9-2 2-2Z" />
+          <path d="M13.8 2.8v5.3c0 .6.5 1.1 1.1 1.1h5.3L13.8 2.8Z" />
+        </svg>
+      </span>
+    `,
+    text: `
+      <span class="file-icon file-icon--file file-icon--file-text" aria-hidden="true">
+        <svg viewBox="0 0 24 24" focusable="false">
+          <path fill="#6b7280" d="M6.8 2.8h7.1l5.3 5.3v13.1H6.8c-1.1 0-2-.9-2-2V4.8c0-1.1.9-2 2-2Z" />
+          <path fill="rgba(255,255,255,0.42)" d="M13.8 2.8v5.3c0 .6.5 1.1 1.1 1.1h5.3L13.8 2.8Z" />
+          <rect x="8.2" y="11" width="7.4" height="1.3" rx=".65" fill="#ffffff" />
+          <rect x="8.2" y="13.6" width="7.4" height="1.3" rx=".65" fill="#ffffff" />
+          <rect x="8.2" y="16.2" width="6.1" height="1.3" rx=".65" fill="#ffffff" />
+        </svg>
+      </span>
+    `,
+    code: `
+      <span class="file-icon file-icon--file file-icon--file-code" aria-hidden="true">
+        <svg viewBox="0 0 24 24" focusable="false">
+          <path fill="#4f8df8" d="M6.8 2.8h7.1l5.3 5.3v13.1H6.8c-1.1 0-2-.9-2-2V4.8c0-1.1.9-2 2-2Z" />
+          <path fill="#dbeafe" d="M13.8 2.8v5.3c0 .6.5 1.1 1.1 1.1h5.3L13.8 2.8Z" />
+          <path d="m10.2 11.3-2.2 2.2 2.2 2.2" fill="none" stroke="#ffffff" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" />
+          <path d="m13.8 11.3 2.2 2.2-2.2 2.2" fill="none" stroke="#ffffff" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" />
+        </svg>
+      </span>
+    `,
+    pdf: `
+      <span class="file-icon file-icon--file file-icon--file-pdf" aria-hidden="true">
+        <svg viewBox="0 0 24 24" focusable="false">
+          <path fill="#f97316" d="M6.8 2.8h7.1l5.3 5.3v13.1H6.8c-1.1 0-2-.9-2-2V4.8c0-1.1.9-2 2-2Z" />
+          <path fill="#fdba74" d="M13.8 2.8v5.3c0 .6.5 1.1 1.1 1.1h5.3L13.8 2.8Z" />
+          <text x="12" y="17.2" text-anchor="middle" fill="#ffffff" font-size="4.5" font-weight="700" font-family="Segoe UI, Arial, sans-serif">PDF</text>
+        </svg>
+      </span>
+    `,
+    word: `
+      <span class="file-icon file-icon--file file-icon--file-word" aria-hidden="true">
+        <svg viewBox="0 0 24 24" focusable="false">
+          <path fill="#4f8df8" d="M6.8 2.8h7.1l5.3 5.3v13.1H6.8c-1.1 0-2-.9-2-2V4.8c0-1.1.9-2 2-2Z" />
+          <path fill="#dbeafe" d="M13.8 2.8v5.3c0 .6.5 1.1 1.1 1.1h5.3L13.8 2.8Z" />
+          <text x="12" y="17.4" text-anchor="middle" fill="#ffffff" font-size="8.2" font-weight="700" font-family="Segoe UI, Arial, sans-serif">W</text>
+        </svg>
+      </span>
+    `,
+  };
+  return icons[variant] || icons.generic;
+}
+
 function renderFileIcon(item) {
   if (item.is_directory) {
     return `
@@ -1559,14 +1676,14 @@ function renderFileIcon(item) {
       </span>
     `;
   }
-  return `
-    <span class="file-icon file-icon--file" aria-hidden="true">
-      <svg viewBox="0 0 24 24" focusable="false">
-        <path d="M6.8 2.8h7.1l5.3 5.3v13.1H6.8c-1.1 0-2-.9-2-2V4.8c0-1.1.9-2 2-2Z" />
-        <path d="M13.8 2.8v5.3c0 .6.5 1.1 1.1 1.1h5.3L13.8 2.8Z" />
-      </svg>
-    </span>
-  `;
+  if (isFileImage(item)) {
+    return `
+      <span class="file-icon file-icon--image" aria-hidden="true">
+        <img src="${escapeHtml(buildFilePreviewUrl(item.path))}" alt="" loading="lazy" />
+      </span>
+    `;
+  }
+  return renderDocumentFileIcon(getFileIconVariant(item));
 }
 
 function renderFileActionIcon(iconName) {
@@ -1621,8 +1738,20 @@ function getFileTypeLabel(item) {
   if (item.is_directory) {
     return '目录';
   }
+  if (isFileImage(item)) {
+    return '图片文件';
+  }
+  if (getFileExtension(item) === '.pdf') {
+    if (item.is_protected || item.can_edit === false) {
+      return item.requires_password ? 'PDF文件 · 需鉴权 · 只读' : 'PDF文件 · 只读';
+    }
+    return item.requires_password ? 'PDF文件 · 需鉴权' : 'PDF文件';
+  }
   if (item.preview_type === 'binary') {
     return '文件 · 当前不可预览';
+  }
+  if (item.is_protected || item.can_edit === false) {
+    return item.requires_password ? '文本文件 · 需鉴权 · 只读' : '文本文件 · 只读';
   }
   return item.requires_password ? '文本文件 · 需鉴权' : '文本文件';
 }
@@ -2265,12 +2394,86 @@ function findFileItem(pathValue) {
   return state.files.items.find((item) => normalizeFilePath(item.path) === normalized) || null;
 }
 
+function buildFileImageViewerItems() {
+  return state.files.items
+    .filter((item) => !item.is_directory && isFileImage(item))
+    .map((item) => ({
+      path: normalizeFilePath(item.path),
+      name: item.name || item.path || '图片预览',
+      url: buildFilePreviewUrl(item.path),
+    }));
+}
+
+function renderFileImageViewer() {
+  if (!state.files.imageViewer.visible) {
+    return;
+  }
+  const items = state.files.imageViewer.items;
+  if (!items.length) {
+    closeFileImageViewer();
+    return;
+  }
+  const index = Math.max(0, Math.min(state.files.imageViewer.index, items.length - 1));
+  state.files.imageViewer.index = index;
+  const current = items[index];
+  if (elements.fileImageViewerImage) {
+    elements.fileImageViewerImage.src = current.url;
+    elements.fileImageViewerImage.alt = current.name;
+  }
+  if (elements.fileImageViewerCount) {
+    elements.fileImageViewerCount.textContent = `${index + 1} / ${items.length}`;
+  }
+  const showNav = items.length > 1;
+  elements.fileImageViewerPrevButton?.classList.toggle('hidden', !showNav);
+  elements.fileImageViewerNextButton?.classList.toggle('hidden', !showNav);
+}
+
+function openFileImageViewer(item) {
+  const items = buildFileImageViewerItems();
+  if (!items.length) {
+    return;
+  }
+  const targetPath = normalizeFilePath(item?.path || '');
+  const index = Math.max(0, items.findIndex((entry) => entry.path === targetPath));
+  state.files.imageViewer.items = items;
+  state.files.imageViewer.index = index;
+  state.files.imageViewer.visible = true;
+  document.body.classList.add('file-image-viewer-open');
+  renderFileImageViewer();
+  elements.fileImageViewer?.classList.remove('hidden');
+}
+
+function moveFileImageViewer(step) {
+  const items = state.files.imageViewer.items;
+  if (!state.files.imageViewer.visible || items.length <= 1) {
+    return;
+  }
+  const total = items.length;
+  state.files.imageViewer.index = (state.files.imageViewer.index + step + total) % total;
+  renderFileImageViewer();
+}
+
+function closeFileImageViewer() {
+  state.files.imageViewer.visible = false;
+  state.files.imageViewer.items = [];
+  state.files.imageViewer.index = 0;
+  elements.fileImageViewer?.classList.add('hidden');
+  document.body.classList.remove('file-image-viewer-open');
+  if (elements.fileImageViewerImage) {
+    elements.fileImageViewerImage.removeAttribute('src');
+  }
+}
+
 async function openFileItem(item) {
   if (!item) {
     return;
   }
   if (item.is_directory) {
     await loadFiles({ path: item.path, forceReload: true });
+    return;
+  }
+  if (isFileImage(item)) {
+    openFileImageViewer(item);
     return;
   }
   if (item.preview_type !== 'text') {
@@ -2286,14 +2489,14 @@ async function openFileItem(item) {
     return;
   }
   if (item.requires_password) {
-    openFileAuthModal(item);
+    openFileAuthModal(item, 'edit');
     return;
   }
-  await readFileForPreview(item);
+  await openTextFileForEdit(item);
 }
 
-async function readFileForPreview(item, password = '') {
-  const payload = await requestJson('/api/files/read', {
+async function readFileContent(item, password = '') {
+  return requestJson('/api/files/read', {
     method: 'POST',
     body: JSON.stringify({
       path: item.path,
@@ -2301,7 +2504,20 @@ async function readFileForPreview(item, password = '') {
     }),
     skipAuthRedirect: Boolean(item.requires_password),
   });
+}
+
+async function readFileForPreview(item, password = '') {
+  const payload = await readFileContent(item, password);
   openFilePreviewModal(payload);
+}
+
+async function openTextFileForEdit(item, password = '') {
+  const payload = await readFileContent(item, password);
+  if (!payload.can_edit) {
+    openFilePreviewModal(payload);
+    return;
+  }
+  openFileEditModal(payload, password);
 }
 
 function openFilePreviewModal(payload) {
@@ -2319,10 +2535,16 @@ function openFilePreviewModal(payload) {
     elements.filePreviewContent.textContent = '';
     elements.filePreviewContent.classList.add('hidden');
   } else {
-    elements.filePreviewNotice.textContent = payload.truncated
-      ? '文件较大，仅显示前 1 MiB 内容。'
-      : '';
-    elements.filePreviewNotice.classList.toggle('hidden', !payload.truncated);
+    let notice = '';
+    if (payload.is_protected) {
+      notice = '该文件属于 RocketCatShell 核心源码或内置插件源码，只允许查看，不能修改。';
+    } else if (payload.truncated) {
+      notice = '文件较大，仅显示前 1 MiB 内容，暂不允许在线编辑。';
+    } else if (payload.can_edit === false) {
+      notice = '该文件当前只允许查看，不能在线编辑。';
+    }
+    elements.filePreviewNotice.textContent = notice;
+    elements.filePreviewNotice.classList.toggle('hidden', !notice);
     elements.filePreviewContent.textContent = payload.content || '';
     elements.filePreviewContent.classList.remove('hidden');
   }
@@ -2337,8 +2559,114 @@ function closeFilePreviewModal() {
   }
 }
 
-function openFileAuthModal(item) {
+function updateFileEditLineNumbers() {
+  if (!elements.fileEditLineNumbers || !elements.fileEditContentInput) {
+    return;
+  }
+  const lineCount = Math.max(1, elements.fileEditContentInput.value.split('\n').length);
+  elements.fileEditLineNumbers.textContent = Array.from({ length: lineCount }, (_, index) => index + 1).join('\n');
+}
+
+function openFileEditModal(payload, password = '') {
+  state.files.editingFile = {
+    path: normalizeFilePath(payload.path),
+    name: payload.name || payload.path || '文件',
+    content: payload.content || '',
+    originalContent: payload.content || '',
+    password,
+    requiresPassword: Boolean(payload.requires_password),
+    isProtected: Boolean(payload.is_protected),
+  };
+  if (elements.fileEditPathChip) {
+    elements.fileEditPathChip.textContent = formatFilePath(payload.path || '');
+  }
+  if (elements.fileEditContentInput) {
+    elements.fileEditContentInput.value = state.files.editingFile.content;
+    updateFileEditLineNumbers();
+    elements.fileEditContentInput.scrollTop = 0;
+  }
+  if (elements.fileEditNotice) {
+    const notice = payload.requires_password
+      ? '该文件需要鉴权，保存前会要求二次确认。'
+      : '';
+    elements.fileEditNotice.textContent = notice;
+    elements.fileEditNotice.classList.toggle('hidden', !notice);
+  }
+  elements.fileEditModal?.classList.remove('hidden');
+  window.setTimeout(() => elements.fileEditContentInput?.focus(), 0);
+}
+
+function closeFileEditModal() {
+  state.files.editingFile = null;
+  elements.fileEditModal?.classList.add('hidden');
+  if (elements.fileEditContentInput) {
+    elements.fileEditContentInput.value = '';
+  }
+  if (elements.fileEditLineNumbers) {
+    elements.fileEditLineNumbers.textContent = '1';
+  }
+}
+
+function openFileSaveConfirmModal() {
+  const editingFile = state.files.editingFile;
+  if (!editingFile) {
+    return;
+  }
+  const nextContent = elements.fileEditContentInput?.value || '';
+  if (nextContent === editingFile.originalContent) {
+    showToast('文件内容没有变化');
+    return;
+  }
+  if (elements.fileSaveConfirmTitle) {
+    elements.fileSaveConfirmTitle.textContent = editingFile.requiresPassword ? '保存鉴权文件' : '保存文件';
+  }
+  if (elements.fileSaveConfirmMessage) {
+    elements.fileSaveConfirmMessage.textContent = editingFile.requiresPassword
+      ? `修改鉴权文件可能导致出错，确定要保存「${formatFilePath(editingFile.path)}」吗？`
+      : `确定要保存「${formatFilePath(editingFile.path)}」的修改吗？`;
+  }
+  elements.fileSaveConfirmModal?.classList.remove('hidden');
+}
+
+function closeFileSaveConfirmModal() {
+  state.files.pendingSave = false;
+  elements.fileSaveConfirmModal?.classList.add('hidden');
+}
+
+async function saveFileEditContent() {
+  const editingFile = state.files.editingFile;
+  if (!editingFile || state.files.pendingSave) {
+    return;
+  }
+  state.files.pendingSave = true;
+  if (elements.fileSaveConfirmSubmitButton) {
+    elements.fileSaveConfirmSubmitButton.disabled = true;
+  }
+  try {
+    await requestJson('/api/files/write', {
+      method: 'POST',
+      body: JSON.stringify({
+        path: editingFile.path,
+        content: elements.fileEditContentInput?.value || '',
+        password: editingFile.password || '',
+      }),
+      skipAuthRedirect: editingFile.requiresPassword,
+    });
+    closeFileSaveConfirmModal();
+    closeFileEditModal();
+    await loadFiles({ forceReload: true, silent: true });
+    showToast('保存成功', 'success');
+  } finally {
+    state.files.pendingSave = false;
+    if (elements.fileSaveConfirmSubmitButton) {
+      elements.fileSaveConfirmSubmitButton.disabled = false;
+    }
+  }
+}
+
+function openFileAuthModal(item, mode = 'edit') {
   state.files.pendingAuthItem = item;
+  state.files.pendingAuthMode = mode;
   elements.fileAuthMessage.textContent = `文件 ${formatFilePath(item.path)} 包含敏感持久化数据，请输入 WebUI 登录认证 / 文件管理鉴权密码。`;
   elements.fileAuthPasswordInput.value = '';
   elements.fileAuthModal.classList.remove('hidden');
@@ -2347,6 +2675,7 @@ function openFileAuthModal(item) {
 
 function closeFileAuthModal() {
   state.files.pendingAuthItem = null;
+  state.files.pendingAuthMode = 'edit';
   elements.fileAuthModal?.classList.add('hidden');
   if (elements.fileAuthPasswordInput) {
     elements.fileAuthPasswordInput.value = '';
@@ -2865,6 +3194,13 @@ elements.closeModalButton?.addEventListener('click', closeModal);
 elements.cancelButton?.addEventListener('click', closeModal);
 elements.filePreviewCloseButton?.addEventListener('click', closeFilePreviewModal);
 elements.filePreviewCancelButton?.addEventListener('click', closeFilePreviewModal);
+elements.fileImageViewerCloseButton?.addEventListener('click', closeFileImageViewer);
+elements.fileImageViewerPrevButton?.addEventListener('click', () => {
+  moveFileImageViewer(-1);
+});
+elements.fileImageViewerNextButton?.addEventListener('click', () => {
+  moveFileImageViewer(1);
+});
 elements.fileCreateCloseButton?.addEventListener('click', closeFileCreateModal);
 elements.fileCreateCancelButton?.addEventListener('click', closeFileCreateModal);
 elements.fileCreateSubmitButton?.addEventListener('click', async () => {
@@ -2971,7 +3307,11 @@ elements.fileAuthSubmitButton?.addEventListener('click', async () => {
   }
   try {
     const password = String(elements.fileAuthPasswordInput?.value || '');
-    await readFileForPreview(item, password);
+    if (state.files.pendingAuthMode === 'preview') {
+      await readFileForPreview(item, password);
+    } else {
+      await openTextFileForEdit(item, password);
+    }
     closeFileAuthModal();
   } catch (error) {
     showToast(error.message || '文件管理鉴权失败', 'error');
@@ -2984,6 +3324,30 @@ elements.fileAuthPasswordInput?.addEventListener('keydown', async (event) => {
   }
   event.preventDefault();
   elements.fileAuthSubmitButton?.click();
+});
+elements.fileEditCloseButton?.addEventListener('click', closeFileEditModal);
+elements.fileEditCancelButton?.addEventListener('click', closeFileEditModal);
+elements.fileEditSaveButton?.addEventListener('click', openFileSaveConfirmModal);
+elements.fileEditContentInput?.addEventListener('input', updateFileEditLineNumbers);
+elements.fileEditContentInput?.addEventListener('scroll', () => {
+  if (elements.fileEditLineNumbers && elements.fileEditContentInput) {
+    elements.fileEditLineNumbers.scrollTop = elements.fileEditContentInput.scrollTop;
+  }
+});
+elements.fileEditContentInput?.addEventListener('keydown', (event) => {
+  if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 's') {
+    event.preventDefault();
+    openFileSaveConfirmModal();
+  }
+});
+elements.fileSaveConfirmCloseButton?.addEventListener('click', closeFileSaveConfirmModal);
+elements.fileSaveConfirmCancelButton?.addEventListener('click', closeFileSaveConfirmModal);
+elements.fileSaveConfirmSubmitButton?.addEventListener('click', async () => {
+  try {
+    await saveFileEditContent();
+  } catch (error) {
+    showToast(error.message || '保存失败', 'error');
+  }
 });
 elements.submitButton?.addEventListener('click', async () => {
   try {
@@ -3077,6 +3441,11 @@ elements.pluginUninstallModal?.addEventListener('click', (event) => {
 elements.filePreviewModal?.addEventListener('click', (event) => {
   if (event.target === elements.filePreviewModal) {
     closeFilePreviewModal();
+  }
+});
+elements.fileImageViewer?.addEventListener('click', (event) => {
+  if (event.target === elements.fileImageViewer) {
+    closeFileImageViewer();
   }
 });
 elements.fileCreateModal?.addEventListener('click', (event) => {
@@ -3253,16 +3622,33 @@ elements.logPerfButton?.addEventListener('click', () => {
 });
 
 window.addEventListener('keydown', (event) => {
+  if (state.files.imageViewer.visible) {
+    if (event.key === 'Escape') {
+      closeFileImageViewer();
+      return;
+    }
+    if (event.key === 'ArrowLeft') {
+      moveFileImageViewer(-1);
+      return;
+    }
+    if (event.key === 'ArrowRight') {
+      moveFileImageViewer(1);
+      return;
+    }
+  }
   if (event.key === 'Escape') {
     closeModal();
     closePluginModal();
     closePluginUninstallModal();
+    closeFileImageViewer();
     closeFilePreviewModal();
     closeFileCreateModal();
     closeFileDeleteModal();
     closeFileMoveModal();
     closeFileRenameModal();
     closeFileAuthModal();
+    closeFileSaveConfirmModal();
+    closeFileEditModal();
   }
 });
 
