@@ -5,5 +5,7 @@ fastapi>=0.110,<1
 orjson>=3.10,<4
 psutil>=6,<7
 python-multipart>=0.0.9,<1
+pywinpty>=2.0,<3; platform_system == "Windows"
 PyYAML>=6,<7
 uvicorn>=0.23,<1
+websockets>=12,<16

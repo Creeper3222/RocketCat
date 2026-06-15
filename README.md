@@ -7,13 +7,27 @@
 
 本项目的目标不是继续做一个“宿主里的桥接插件”，而是把 RocketCat 发展成一套真正独立的 `Rocket.Chat <-> OneBot v11` 桥接软件。
 
-> 当前 README 对应版本为 `v0.1.7`。`v0.1.3` 是破坏性架构重构基线，`v0.1.4` 统一收口性能优化，`v0.1.5` 补齐了内置指令与运维增强，`v0.1.6` 推进运行诊断可观测性和入站热路径性能收口，而 `v0.1.7` 开始补齐面向 Docker 迁移的内置文件管理能力。
+> 当前 README 对应版本为 `v0.1.8`。`v0.1.3` 是破坏性架构重构基线，`v0.1.4` 统一收口性能优化，`v0.1.5` 补齐了内置指令与运维增强，`v0.1.6` 推进运行诊断可观测性和入站热路径性能收口，`v0.1.7` 开始补齐面向 Docker 迁移的内置文件管理能力，而 `v0.1.8` 开始引入 NapCat 风格的 WebUI 系统终端。
 
 这意味着：
 
 - RocketCatShell 自己拥有 `config/`、`data/`、`logs/` 目录边界。
 - RocketCatShell 自己提供本地 WebUI、登录认证、Bot 管理和插件管理。
 - RocketCatShell 仍然可以作为 OneBot reverse WebSocket 客户端与 AstrBot 协同，但不再依赖 AstrBot 插件宿主才能运行。
+
+---
+
+## v0.1.8（系统终端更新）
+
+`v0.1.8` 新增 `系统终端` WebUI 页面，第一阶段对齐 NapCat 的终端管理体验，让管理员可以直接在 WebUI 内创建和切换多个本地终端会话。
+
+- 左侧导航新增 `系统终端`，图标与页面结构对齐 NapCat 的终端入口。
+- 页面右上角新增终端创建按钮；没有终端时显示空状态提示，点击按钮即可创建终端。
+- 每个终端使用独立 UUID 作为默认标签名，上方 tab 条可点击切换当前终端，也可关闭指定终端。
+- 终端 tab 支持横向拖拽排序，排序结果会同步给后端会话列表。
+- 后端新增 `/api/terminal/list`、`/api/terminal/create`、`/api/terminal/{id}/close`、`/api/terminal/order` 与 `/api/ws/terminal/{id}`，终端 WebSocket 复用当前 WebUI 登录 cookie 鉴权。
+
+当前 Windows live 版本使用轻量子进程终端实现，不额外引入原生 PTY 依赖；这保证了 v0.1.8 可以先稳定落地 WebUI 多终端管理能力，后续如需更完整的 xterm 级交互再单独增强。
 
 ---
 
@@ -57,8 +71,8 @@
 
 - 新增本地内置指令插件 `rocketcat_plugin_built_in_command`。它通过 Shell 插件系统直接拦截 Rocket.Chat 入站精确纯文本指令，目前实现 `#rocketcat` 与 `#system` 两条命令，不再要求上游 AstrBot 侧参与处理。
 - `#rocketcat` 用于返回当前桥接 Bot 的基础信息：包括客户端显示名、登录账号、显示昵称、OneBot self_id、连接状态和 Rocket.Chat 服务器地址，并追加发送 bot 头像与服务器 branding 头像，方便在房间内快速确认“当前是谁、连的是哪台、状态是否正常”。
-- 媒体上传链路新增 plain upload 端点自适应：继续兼容旧版 Rocket.Chat 的 `rooms.upload/:rid`，并可在 `8.0.0+` 环境下自动回退到 `rooms.media/:rid`，修复 `#rocketcat` 中 bot 头像与 server branding 在 Rocket.Chat 8.0.1 等新服上退化为纯文本的问题。
-- Rocket.Chat 8.x 的 `rooms.media/:rid` 不再像旧 `rooms.upload/:rid` 那样直接完成发图消息创建，因此 plain 媒体上传现在会在上传成功后继续调用 `rooms.mediaConfirm/:rid/:fileId`，真正把图片或文件发进房间，并恢复后续消息映射链路；同时对同服远端媒体（尤其是 bot 自己的 `/avatar/{username}`）会自动补 `rc_uid/rc_token` 登录态并按响应 `Content-Type` 选择正确后缀，修复本地新服里 `#rocketcat` 与 WebUI 基础信息页拿不到 bot 头像、或把默认 SVG 头像误当作 PNG 上传后显示损坏的问题。只有 confirm 异常时才会回退到现有的自回显兜底诊断。
+- 媒体上传链路优化 plain upload 端点自适应：默认优先使用 Rocket.Chat 8.0.0+ 的 `rooms.media/:rid` + `rooms.mediaConfirm/:rid/:fileId`，失败时回退旧版 `rooms.upload/:rid`；每个 Bot 独立记忆可用端点，后续上传直接走自身最适链路。
+- Rocket.Chat 8.x 的 `rooms.media/:rid` 不再像旧 `rooms.upload/:rid` 那样直接完成发图消息创建，因此 plain 媒体上传会在上传成功后继续调用 `rooms.mediaConfirm/:rid/:fileId`，真正把图片或文件发进房间；如果缓存的旧版端点在服务器升级后失效，也会反向回退到新版链路。同时对同服远端媒体（尤其是 bot 自己的 `/avatar/{username}`）会自动补 `rc_uid/rc_token` 登录态并按响应 `Content-Type` 选择正确后缀，修复本地新服里 `#rocketcat` 与 WebUI 基础信息页拿不到 bot 头像、或把默认 SVG 头像误当作 PNG 上传后显示损坏的问题。
 - `#rocketcat` 的插件直发媒体链路现在会在不需要 OneBot 映射时跳过 5 秒自回显等待，并把内置指令自回显抑制从一次性 `source_id` 扩展为短 TTL 的 `source_id + 房间/正文签名` 匹配，修复新旧服混跑时加密房间第二段回复超时和旧服非加密房间重复回显的问题。
 - `#system` 用于返回当前 RocketCatShell 进程所在主机的系统快照：包括版本号、Python 版本、主机名、系统信息、CPU 商品名 / 核心数 / 主频 / 系统占用 / Shell 进程占用，以及内存总量 / 已用 / 可用 / 当前进程占用。该命令依赖新增运行依赖 `psutil`。
 - `rocketcat_plugin_adapt_iamthinking` 不再只做 reaction 映射。现在它可以在继续兼容 `set_msg_emoji_like` 的同时，把“思考中 / 已完成”阶段独立映射为 Rocket.Chat typing 指示器；reaction 与 typing 在插件设置页可分别开关，长时间思考还会自动续期 typing 心跳。
@@ -75,7 +89,7 @@
 - P0 热路径优化：热存储减少重复深拷贝，source / surrogate message 索引共享同一 entry；入站消息注册表改为紧凑字段存储，需要 hydrate 时再重建 OneBot 事件；Rocket.Chat 入站 DDP 消息改为按房间分片队列处理，同房间保持 FIFO，不同房间可并行。
 - P0 去重优化：入站重复消息签名改为轻量字段签名，并对附件、文件、URL、mentions 等大结构使用稳定哈希，降低重复 update 判断成本。
 - P1 JSON / 连接优化：新增统一 JSON codec，优先使用 `orjson`；HTTP session 使用连接池、DNS TTL 和 keepalive；WebSocket 发送统一走预序列化字符串，减少 aiohttp 默认 JSON 路径开销。
-- P1 媒体优化：普通远端媒体下载改为边下载边写临时文件；E2EE 媒体上传改为原文件分块读取、CTR 分块加密到临时密文文件，再以文件流上传；Base64 媒体增加大小预判和严格解码。
+- P1 媒体优化：普通远端媒体下载改为边下载边写临时文件；E2EE 媒体上传改为原文件分块读取、CTR 分块加密到临时密文文件，再以文件流上传；Base64 媒体增加大小预判和严格解码；Bot 的远端媒体大小上限同时约束媒体下载与上传。
 - P1 插件 action 优化：插件可声明 `handled_actions`，运行时按 action 精确分发，未声明的旧插件继续作为 fallback，减少 OneBot action 广播式试探。
 - P2 WebUI / 插件控制面优化：插件列表和详情增加目录签名缓存，未变化时不再反复扫目录和解析配置；基础信息页 Rocket.Chat server branding 增加 TTL 缓存；猫猫日志从 1 秒短轮询改为长轮询，空闲时显著减少 WebUI 请求和 JSON 响应。
 
@@ -143,7 +157,7 @@ AstrBot or other compatible OneBot-side workflow
 - 支持文本、`at`、引用回复、图片、文件、语音、视频、Markdown 出站发送。
 - 支持引用链提取、回复来源识别、提及用户映射、群聊 / 私聊上下文映射，以及发送者 / 提及 / 回复 / 子频道等独立认知元数据。
 - 支持固定大小的 message 索引窗口、超窗自动裁剪和 WebUI 手动窗口重建。
-- 支持远端媒体下载、大小限制控制、本地临时文件落地和 Base64 媒体上传。
+- 支持远端媒体下载、上传大小限制控制、本地临时文件落地和 Base64 媒体上传。
 - 支持 Rocket.Chat 官方 E2EE 私聊 / 私有群组文本与媒体收发。
 - 支持本地插件系统，可发现、启停、重载、卸载本地插件，并在运行时接管 OneBot action。
 - 支持内置指令系统插件 `rocketcat_plugin_built_in_command`，当前提供精确纯文本 `#rocketcat` 与 `#system` 两条本地命令。
@@ -199,7 +213,7 @@ RocketCatShell 当前这一版明确不承诺合并转发消息语义。
 - OneBot `text` 直接发送为 Rocket.Chat 文本。
 - OneBot `at` 会转换为 Rocket.Chat `@username` 或 `@all`。
 - OneBot `image` 支持 HTTP(S) 链接、本地文件和 Base64 数据。
-- OneBot `file`、`record`、`video` 支持本地文件；远端媒体会先尝试下载再上传。
+- OneBot `file`、`record`、`video` 支持本地文件；远端媒体会先尝试下载再上传，并统一使用当前 Bot 的媒体大小上限。
 - OneBot `markdown` 会按文本内容发往 Rocket.Chat。
 
 ### 上下文与映射
@@ -466,7 +480,7 @@ http://127.0.0.1:5751/
 - 重连延迟
 - 最大连续重连次数
 - 子频道会话隔离
-- 远端媒体大小上限
+- 远端媒体上传 / 下载大小上限
 - 忽略机器人自己的消息
 - 调试日志
 
@@ -500,7 +514,7 @@ http://127.0.0.1:5751/
 | `default_reconnect_delay` | 默认重连延迟。 |
 | `default_max_reconnect_attempts` | 默认最大连续重连次数。 |
 | `default_enable_subchannel_session_isolation` | 默认是否开启子频道会话隔离。 |
-| `default_remote_media_max_size` | 默认远端媒体大小上限。 |
+| `default_remote_media_max_size` | 默认远端媒体上传 / 下载大小上限。 |
 | `default_skip_own_messages` | 默认是否忽略机器人自己的消息。 |
 | `default_debug` | 默认是否开启调试日志。 |
 | `next_onebot_self_id` | 下一个建议的 OneBot self_id。 |
@@ -524,7 +538,7 @@ http://127.0.0.1:5751/
 | `reconnect_delay` | 断线重连等待秒数。 |
 | `max_reconnect_attempts` | 最大重连次数；`0` 表示不限次数。 |
 | `enable_subchannel_session_isolation` | 是否按子频道隔离上下文。 |
-| `remote_media_max_size` | 远端媒体大小上限。 |
+| `remote_media_max_size` | 当前 Bot 的远端媒体上传 / 下载大小上限。 |
 | `room_info_cache_ttl_seconds` | 房间信息缓存 TTL，单位秒，默认 `300`。 |
 | `perf_trace_enabled` | 是否输出入站性能追踪日志；也可被环境变量 `ROCKETCAT_PERF_TRACE` 覆盖。 |
 | `skip_own_messages` | 是否忽略自己发出的消息。 |
@@ -570,7 +584,7 @@ logs/
 - 合并转发消息当前未实现。
 - 系统事件、审计事件、编辑 / 撤回 / 已读等非消息类事件不在这一版的桥接承诺范围内。
 - E2EE 仅覆盖 Rocket.Chat 加密私聊和加密私有群组。
-- 远端媒体如果下载失败、超出大小限制或源地址不可用，相关媒体发送会失败或降级。
+- 远端媒体如果下载失败、上传 / 下载超出大小限制或源地址不可用，相关媒体发送会失败或降级，并写入 error 日志。
 - `set_msg_emoji_like` 的扩展行为依赖本地插件；如果未安装对应插件，核心会返回未处理。
 
 ---

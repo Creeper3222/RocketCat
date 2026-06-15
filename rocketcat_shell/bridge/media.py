@@ -25,6 +25,54 @@ class RocketChatMediaBridge:
         self.client = client
         self._plain_upload_endpoint_preference: str | None = None
 
+    def _remote_media_size_limit(self) -> int:
+        return max(0, int(getattr(self.client.config, "remote_media_max_size", 0) or 0))
+
+    def _log_media_size_limit_error(
+        self,
+        action: str,
+        *,
+        actual_size: int,
+        limit: int,
+        room_id: str | None = None,
+        file_name: str | None = None,
+        source: str | None = None,
+    ) -> None:
+        config = self.client.config
+        logger.error(
+            "[RocketChatOneBotBridge] %s，超过 bot 远程媒体大小上限: "
+            "bot_id=%s bot_name=%s room_id=%s file=%s size=%s limit=%s source=%s",
+            action,
+            getattr(config, "bot_id", "") or "-",
+            getattr(config, "display_name", "") or "-",
+            room_id or "-",
+            file_name or "-",
+            actual_size,
+            limit,
+            source or "-",
+        )
+
+    def _check_upload_file_size(
+        self,
+        *,
+        room_id: str,
+        file_path: str,
+        resolved_name: str,
+    ) -> bool:
+        limit = self._remote_media_size_limit()
+        file_size = os.path.getsize(file_path)
+        if file_size <= limit:
+            return True
+        self._log_media_size_limit_error(
+            "上传媒体失败",
+            actual_size=file_size,
+            limit=limit,
+            room_id=room_id,
+            file_name=resolved_name,
+            source=os.path.abspath(file_path),
+        )
+        return False
+
     def _is_base64_media_transport_enabled(self) -> bool:
         return bool(getattr(self.client, "enable_base64_media_transport", False))
 
@@ -416,6 +464,7 @@ class RocketChatMediaBridge:
         if self.client._http_session is None:
             return None
 
+        limit = self._remote_media_size_limit()
         try:
             async with self.client._http_session.get(
                 url,
@@ -428,21 +477,24 @@ class RocketChatMediaBridge:
                     return None
 
                 content_length = resp.content_length
-                if (
-                    content_length is not None
-                    and content_length > self.client.config.remote_media_max_size
-                ):
-                    logger.error(
-                        f"[RocketChatOneBotBridge] 下载媒体失败，文件过大: {content_length} > {self.client.config.remote_media_max_size} ({url})"
+                if content_length is not None and content_length > limit:
+                    self._log_media_size_limit_error(
+                        "下载媒体失败",
+                        actual_size=content_length,
+                        limit=limit,
+                        source=url,
                     )
                     return None
 
                 raw = bytearray()
                 async for chunk in resp.content.iter_chunked(64 * 1024):
                     raw.extend(chunk)
-                    if len(raw) > self.client.config.remote_media_max_size:
-                        logger.error(
-                            f"[RocketChatOneBotBridge] 下载媒体失败，文件超过限制: {len(raw)} > {self.client.config.remote_media_max_size} ({url})"
+                    if len(raw) > limit:
+                        self._log_media_size_limit_error(
+                            "下载媒体失败",
+                            actual_size=len(raw),
+                            limit=limit,
+                            source=url,
                         )
                         return None
                 return bytes(raw)
@@ -668,9 +720,9 @@ class RocketChatMediaBridge:
         return "application/octet-stream"
 
     def _normalize_plain_upload_endpoint(self, endpoint_name: str | None) -> str:
-        if endpoint_name == self._PLAIN_UPLOAD_MODERN_ENDPOINT:
-            return self._PLAIN_UPLOAD_MODERN_ENDPOINT
-        return self._PLAIN_UPLOAD_LEGACY_ENDPOINT
+        if endpoint_name == self._PLAIN_UPLOAD_LEGACY_ENDPOINT:
+            return self._PLAIN_UPLOAD_LEGACY_ENDPOINT
+        return self._PLAIN_UPLOAD_MODERN_ENDPOINT
 
     def _alternate_plain_upload_endpoint(self, endpoint_name: str | None) -> str:
         normalized_endpoint = self._normalize_plain_upload_endpoint(endpoint_name)
@@ -905,11 +957,11 @@ class RocketChatMediaBridge:
         *,
         description: str = "",
         tmid: Optional[str] = None,
-    ) -> dict[str, Any]:
+    ) -> tuple[dict[str, Any], bool]:
         if endpoint_name != self._PLAIN_UPLOAD_MODERN_ENDPOINT:
-            return upload_data
+            return upload_data, False
         if self._extract_uploaded_message(upload_data) is not None:
-            return upload_data
+            return upload_data, False
 
         confirmed_data = await self._confirm_plain_uploaded_file(
             room_id,
@@ -917,7 +969,40 @@ class RocketChatMediaBridge:
             description=description,
             tmid=tmid,
         )
-        return confirmed_data or upload_data
+        if confirmed_data is not None:
+            return confirmed_data, False
+        return upload_data, True
+
+    async def _try_plain_upload_endpoint(
+        self,
+        endpoint_name: str,
+        room_id: str,
+        file_path: str,
+        resolved_name: str,
+        *,
+        description: str = "",
+        tmid: Optional[str] = None,
+    ) -> tuple[dict[str, Any] | None, dict[str, Any], bool]:
+        result = await self._upload_plain_file_via_endpoint(
+            endpoint_name,
+            room_id,
+            file_path,
+            resolved_name,
+            description=description,
+            tmid=tmid,
+        )
+        data = result.get("data")
+        if not result.get("ok") or not isinstance(data, dict):
+            return None, result, False
+
+        finalized_data, needs_endpoint_fallback = await self._finalize_plain_upload_response(
+            endpoint_name,
+            room_id,
+            data,
+            description=description,
+            tmid=tmid,
+        )
+        return finalized_data, result, needs_endpoint_fallback
 
     async def upload_plain_file(
         self,
@@ -928,7 +1013,7 @@ class RocketChatMediaBridge:
         tmid: Optional[str] = None,
     ) -> Optional[dict[str, Any]]:
         primary_endpoint = self._normalize_plain_upload_endpoint(self._plain_upload_endpoint_preference)
-        primary_result = await self._upload_plain_file_via_endpoint(
+        primary_data, primary_result, primary_needs_fallback = await self._try_plain_upload_endpoint(
             primary_endpoint,
             room_id,
             file_path,
@@ -936,30 +1021,25 @@ class RocketChatMediaBridge:
             description=description,
             tmid=tmid,
         )
-        primary_data = primary_result.get("data")
-        if primary_result.get("ok") and isinstance(primary_data, dict):
+        if primary_data is not None and not primary_needs_fallback:
             self._plain_upload_endpoint_preference = primary_endpoint
-            return await self._finalize_plain_upload_response(
-                primary_endpoint,
-                room_id,
-                primary_data,
-                description=description,
-                tmid=tmid,
-            )
+            return primary_data
 
-        if not self._is_plain_upload_endpoint_incompatible(primary_result):
+        if not primary_needs_fallback and not self._is_plain_upload_endpoint_incompatible(primary_result):
             return None
 
         fallback_endpoint = self._alternate_plain_upload_endpoint(primary_endpoint)
         logger.warning(
-            "[RocketChatOneBotBridge] 检测到 plain upload 端点不兼容，准备回退: server=%s endpoint=%s status=%s content_type=%s body=%s",
+            "[RocketChatOneBotBridge] plain upload 端点需要回退: server=%s from=%s to=%s status=%s content_type=%s body=%s reason=%s",
             self.client.config.server_url,
             primary_endpoint,
+            fallback_endpoint,
             primary_result.get("status") or "-",
             primary_result.get("content_type") or "-",
             self._summarize_response_body(str(primary_result.get("text") or "")),
+            "mediaConfirm failed" if primary_needs_fallback else "endpoint incompatible",
         )
-        fallback_result = await self._upload_plain_file_via_endpoint(
+        fallback_data, fallback_result, fallback_needs_fallback = await self._try_plain_upload_endpoint(
             fallback_endpoint,
             room_id,
             file_path,
@@ -967,8 +1047,7 @@ class RocketChatMediaBridge:
             description=description,
             tmid=tmid,
         )
-        fallback_data = fallback_result.get("data")
-        if fallback_result.get("ok") and isinstance(fallback_data, dict):
+        if fallback_data is not None and not fallback_needs_fallback:
             previous_endpoint = self._plain_upload_endpoint_preference
             self._plain_upload_endpoint_preference = fallback_endpoint
             if previous_endpoint != fallback_endpoint:
@@ -978,14 +1057,10 @@ class RocketChatMediaBridge:
                     previous_endpoint or primary_endpoint,
                     fallback_endpoint,
                 )
-            return await self._finalize_plain_upload_response(
-                fallback_endpoint,
-                room_id,
-                fallback_data,
-                description=description,
-                tmid=tmid,
-            )
-        return None
+            return fallback_data
+        if primary_data is not None:
+            return primary_data
+        return fallback_data
 
     async def upload_local_file(
         self,
@@ -995,6 +1070,13 @@ class RocketChatMediaBridge:
         description: str = "",
         tmid: Optional[str] = None,
     ) -> Optional[dict[str, Any]]:
+        if not self._check_upload_file_size(
+            room_id=room_id,
+            file_path=file_path,
+            resolved_name=resolved_name,
+        ):
+            return None
+
         room_info = await self.client.get_room_info(room_id)
         if self._is_e2ee_room_info(room_info):
             return await self.upload_encrypted_file(
@@ -1329,7 +1411,7 @@ class RocketChatMediaBridge:
         url = await self.client._normalize_media_url(url)
         parsed = urlparse(url)
         if parsed.scheme not in {"http", "https"}:
-            logger.warning(f"[RocketChatOneBotBridge] 鎷掔粷涓嬭浇涓嶆敮鎸佺殑濯掍綋鍗忚: {url}")
+            logger.warning(f"[RocketChatOneBotBridge] 拒绝下载不支持的媒体协议: {url}")
             return None, None
         if self.client._http_session is None:
             return None, None
@@ -1346,14 +1428,17 @@ class RocketChatMediaBridge:
                 max_redirects=3,
             ) as resp:
                 if resp.status >= 400:
-                    logger.error(f"[RocketChatOneBotBridge] 涓嬭浇濯掍綋澶辫触 {resp.status}: {url}")
+                    logger.error(f"[RocketChatOneBotBridge] 下载媒体失败 {resp.status}: {url}")
                     return None, None
 
-                limit = self.client.config.remote_media_max_size
+                limit = self._remote_media_size_limit()
                 content_length = resp.content_length
                 if content_length is not None and content_length > limit:
-                    logger.error(
-                        f"[RocketChatOneBotBridge] 涓嬭浇濯掍綋澶辫触锛屾枃浠惰繃澶? {content_length} > {limit} ({url})"
+                    self._log_media_size_limit_error(
+                        "下载媒体失败",
+                        actual_size=content_length,
+                        limit=limit,
+                        source=url,
                     )
                     return None, None
 
@@ -1370,8 +1455,11 @@ class RocketChatMediaBridge:
                     async for chunk in resp.content.iter_chunked(64 * 1024):
                         downloaded += len(chunk)
                         if downloaded > limit:
-                            logger.error(
-                                f"[RocketChatOneBotBridge] 涓嬭浇濯掍綋澶辫触锛屾枃浠惰秴杩囬檺鍒? {downloaded} > {limit} ({url})"
+                            self._log_media_size_limit_error(
+                                "下载媒体失败",
+                                actual_size=downloaded,
+                                limit=limit,
+                                source=url,
                             )
                             tmp.close()
                             os.unlink(tmp_path)
@@ -1385,7 +1473,7 @@ class RocketChatMediaBridge:
                         os.unlink(tmp_path)
                     raise
         except Exception as exc:
-            logger.error(f"[RocketChatOneBotBridge] 涓嬭浇濯掍綋寮傚父: {exc!r}")
+            logger.error(f"[RocketChatOneBotBridge] 下载媒体异常: {exc!r}")
             if tmp_path and os.path.exists(tmp_path):
                 os.unlink(tmp_path)
             return None, None
@@ -1396,11 +1484,14 @@ class RocketChatMediaBridge:
         default_suffix: str,
     ) -> tuple[str | None, Callable[[], None] | None]:
         encoded = "".join(file_ref[len("base64://") :].split())
-        limit = self.client.config.remote_media_max_size
+        limit = self._remote_media_size_limit()
         estimated_size = (len(encoded) // 4) * 3
         if estimated_size > limit + 2:
-            logger.error(
-                f"[RocketChatOneBotBridge] Base64 濯掍綋澶勭悊澶辫触锛屾枃浠惰繃澶? {estimated_size} > {limit}"
+            self._log_media_size_limit_error(
+                "Base64 媒体处理失败",
+                actual_size=estimated_size,
+                limit=limit,
+                source="base64://",
             )
             return None, None
 
@@ -1411,8 +1502,11 @@ class RocketChatMediaBridge:
             return None, None
 
         if len(raw) > limit:
-            logger.error(
-                f"[RocketChatOneBotBridge] Base64 濯掍綋澶勭悊澶辫触锛屾枃浠惰秴杩囬檺鍒? {len(raw)} > {limit}"
+            self._log_media_size_limit_error(
+                "Base64 媒体处理失败",
+                actual_size=len(raw),
+                limit=limit,
+                source="base64://",
             )
             return None, None
 
@@ -1425,7 +1519,6 @@ class RocketChatMediaBridge:
             tmp.close()
             os.unlink(tmp.name)
             raise
-
 
 def summarize_unsupported_media(raw_msg: dict) -> str | None:
     attachment_count = 0
