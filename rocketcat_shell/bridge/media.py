@@ -5,18 +5,17 @@ import hashlib
 import mimetypes
 import os
 import re
-import secrets
 import tempfile
 from pathlib import Path
 from typing import Any, Callable, Optional
-from urllib.parse import quote, unquote, urlparse
+from urllib.parse import unquote, urlparse
 
 import aiohttp
-from aiohttp import web
 
 from rocketcat_shell.logger import logger
 
 from .json_codec import json_dumps_compact, json_loads
+from .media_publication import MediaPublicationService
 from .rocketchat_compat import RocketChatHTTPError
 
 
@@ -25,19 +24,19 @@ class RocketChatMediaBridge:
     _PLAIN_UPLOAD_MODERN_ENDPOINT = "rooms.media"
     _ENDPOINT_COMPATIBILITY_FAILURE_STATUSES = {404, 405, 410, 501}
     _UPLOAD_MESSAGE_ECHO_TIMEOUT = 5.0
-    _LOCAL_MEDIA_HOST = "127.0.0.1"
-    _LOCAL_MEDIA_ROUTE_PREFIX = "/_rocketcat/media/"
     _LOCAL_MEDIA_MAX_BASE64_BYTES = 20 * 1024 * 1024
 
-    def __init__(self, client: Any, *, cache_dir: str | os.PathLike[str] | None = None) -> None:
+    def __init__(
+        self,
+        client: Any,
+        *,
+        cache_dir: str | os.PathLike[str] | None = None,
+        media_publication_service: MediaPublicationService | None = None,
+    ) -> None:
         self.client = client
         self._plain_upload_endpoint_preference: str | None = None
         self._local_media_cache_dir = self._resolve_local_media_cache_dir(cache_dir)
-        self._local_media_runner: web.AppRunner | None = None
-        self._local_media_site: web.TCPSite | None = None
-        self._local_media_base_url = ""
-        self._local_media_by_token: dict[str, tuple[str, str]] = {}
-        self._local_media_token_by_path: dict[str, str] = {}
+        self._media_publication_service = media_publication_service
 
     def _resolve_local_media_cache_dir(
         self,
@@ -45,90 +44,33 @@ class RocketChatMediaBridge:
     ) -> Path:
         if cache_dir is not None:
             return Path(cache_dir).resolve()
-        config = getattr(self.client, "config", None)
-        bot_id = re.sub(
-            r"[^A-Za-z0-9._-]+",
-            "_",
-            str(getattr(config, "bot_id", "") or "default"),
+        bot_id = str(getattr(self.client.config, "bot_id", "") or "default").strip()
+        return (Path(tempfile.gettempdir()) / "rocketcat_shell_media" / bot_id).resolve()
+
+    def _create_media_temp_file(self, suffix: str):
+        self._local_media_cache_dir.mkdir(parents=True, exist_ok=True)
+        return tempfile.NamedTemporaryFile(
+            suffix=suffix,
+            delete=False,
+            dir=self._local_media_cache_dir,
         )
-        return (
-            Path(tempfile.gettempdir())
-            / "rocketcat_shell_media"
-            / (bot_id or "default")
-        ).resolve()
 
     @property
     def local_media_base_url(self) -> str:
-        return self._local_media_base_url
+        if self._media_publication_service is None:
+            return ""
+        return self._media_publication_service.upstream_base_url(
+            str(getattr(self.client.config, "onebot_ws_url", "") or "")
+        )
 
     async def start(self) -> None:
-        if self._local_media_runner is not None:
-            return
         self._local_media_cache_dir.mkdir(parents=True, exist_ok=True)
-        app = web.Application()
-        app.router.add_get(
-            f"{self._LOCAL_MEDIA_ROUTE_PREFIX}{{token}}/{{filename}}",
-            self._handle_local_media_request,
-        )
-        runner = web.AppRunner(app, access_log=None, shutdown_timeout=1.0)
-        try:
-            await runner.setup()
-            site = web.TCPSite(
-                runner,
-                host=self._LOCAL_MEDIA_HOST,
-                port=0,
-            )
-            await site.start()
-            server = getattr(site, "_server", None)
-            sockets = list(getattr(server, "sockets", None) or [])
-            if not sockets:
-                raise RuntimeError("local media server did not expose a listening socket")
-            port = int(sockets[0].getsockname()[1])
-        except Exception:
-            await runner.cleanup()
-            raise
-
-        self._local_media_runner = runner
-        self._local_media_site = site
-        self._local_media_base_url = (
-            f"http://{self._LOCAL_MEDIA_HOST}:{port}{self._LOCAL_MEDIA_ROUTE_PREFIX.rstrip('/')}"
-        )
-        logger.info(
-            "[RocketChatOneBotBridge][E2EE] 本地解密媒体代理已启动: %s",
-            self._local_media_base_url,
-        )
 
     async def stop(self) -> None:
-        runner = self._local_media_runner
-        self._local_media_runner = None
-        self._local_media_site = None
-        self._local_media_base_url = ""
-        self._local_media_by_token.clear()
-        self._local_media_token_by_path.clear()
-        if runner is not None:
-            await runner.cleanup()
-
-    async def _handle_local_media_request(self, request: web.Request) -> web.StreamResponse:
-        token = str(request.match_info.get("token") or "")
-        entry = self._local_media_by_token.get(token)
-        if entry is None:
-            raise web.HTTPNotFound()
-        file_path, content_type = entry
-        if not os.path.isfile(file_path):
-            self._local_media_by_token.pop(token, None)
-            self._local_media_token_by_path.pop(os.path.normcase(file_path), None)
-            raise web.HTTPNotFound()
-
-        response = web.FileResponse(
-            file_path,
-            headers={
-                "Cache-Control": "private, no-store",
-                "X-Content-Type-Options": "nosniff",
-            },
-        )
-        if content_type:
-            response.content_type = content_type
-        return response
+        if self._media_publication_service is not None:
+            self._media_publication_service.invalidate_bot(
+                str(getattr(self.client.config, "bot_id", "") or "")
+            )
 
     @staticmethod
     def _safe_media_suffix(value: str, default: str = ".bin") -> str:
@@ -153,6 +95,7 @@ class RocketChatMediaBridge:
     def _write_cached_media_file(self, raw: bytes, suffix: str) -> str:
         self._local_media_cache_dir.mkdir(parents=True, exist_ok=True)
         safe_suffix = self._safe_media_suffix(suffix)
+        safe_suffix = self._detect_media_suffix(raw, safe_suffix)
         digest = hashlib.sha256(raw).hexdigest()
         target = self._local_media_cache_dir / f"e2ee_{digest}{safe_suffix}"
         if not target.exists():
@@ -206,29 +149,20 @@ class RocketChatMediaBridge:
         name: str = "",
         content_type: str = "",
     ) -> str | None:
-        if not self._local_media_base_url:
-            return None
         cached_path = self._copy_allowed_media_into_cache(file_path)
-        if not cached_path:
+        if not cached_path or self._media_publication_service is None:
             return None
-
-        normalized_path = os.path.normcase(os.path.realpath(cached_path))
-        token = self._local_media_token_by_path.get(normalized_path)
-        resolved_content_type = (
-            str(content_type or "").split(";", 1)[0].strip()
-            or mimetypes.guess_type(name or cached_path)[0]
-            or "application/octet-stream"
+        published_name = os.path.basename(str(name or "").strip()) or Path(cached_path).name
+        detected_suffix = Path(cached_path).suffix
+        if detected_suffix and Path(published_name).suffix.lower() != detected_suffix.lower():
+            published_name = f"{Path(published_name).stem or 'media'}{detected_suffix}"
+        return self._media_publication_service.publish(
+            bot_id=str(getattr(self.client.config, "bot_id", "") or "default"),
+            onebot_ws_url=str(getattr(self.client.config, "onebot_ws_url", "") or ""),
+            file_path=cached_path,
+            name=published_name,
+            content_type=content_type,
         )
-        if not token:
-            token = secrets.token_urlsafe(24)
-            self._local_media_token_by_path[normalized_path] = token
-            self._local_media_by_token[token] = (cached_path, resolved_content_type)
-
-        display_name = os.path.basename(str(name or cached_path)) or "media"
-        display_name = re.sub(r"[\x00-\x1f\x7f/\\]+", "_", display_name).strip(" .")
-        if not display_name:
-            display_name = f"media{self._safe_media_suffix(cached_path)}"
-        return f"{self._local_media_base_url}/{token}/{quote(display_name)}"
 
     def _publish_base64_media_ref(self, file_ref: str, *, kind: str) -> str | None:
         payload = str(file_ref or "").removeprefix("base64://")
@@ -250,23 +184,14 @@ class RocketChatMediaBridge:
         return self.publish_local_media_file(local_path, name=f"media{suffix}")
 
     def is_current_local_media_url(self, value: str) -> bool:
-        candidate = str(value or "").strip()
-        if not candidate or not self._local_media_base_url:
-            return False
-        if not candidate.startswith(f"{self._local_media_base_url}/"):
-            return False
-        remainder = candidate[len(self._local_media_base_url) + 1 :]
-        token = remainder.split("/", 1)[0]
-        entry = self._local_media_by_token.get(token)
-        return bool(entry and os.path.isfile(entry[0]))
+        return bool(
+            self._media_publication_service
+            and self._media_publication_service.is_current_url(value)
+        )
 
     @classmethod
     def is_rocketcat_local_media_url(cls, value: str) -> bool:
-        parsed = urlparse(str(value or ""))
-        return (
-            parsed.hostname in {"127.0.0.1", "localhost", "::1"}
-            and parsed.path.startswith(cls._LOCAL_MEDIA_ROUTE_PREFIX)
-        )
+        return MediaPublicationService.is_media_url(value)
 
     def prepare_cached_onebot_event_media(self, event: dict[str, Any]) -> bool:
         segments = event.get("message")
@@ -368,27 +293,8 @@ class RocketChatMediaBridge:
         )
         return False
 
-    def _is_base64_media_transport_enabled(self) -> bool:
-        return bool(getattr(self.client, "enable_base64_media_transport", False))
-
-    def _encode_media_file_to_base64(self, file_path: str) -> str | None:
-        candidate = str(file_path or "").strip()
-        if not candidate:
-            return None
-
-        try:
-            with open(candidate, "rb") as fp:
-                return f"base64://{base64.b64encode(fp.read()).decode('ascii')}"
-        except Exception as exc:
-            logger.warning(
-                "[RocketChatOneBotBridge] Base64 媒体编码失败，已回退到路径模式: %s error=%r",
-                candidate,
-                exc,
-            )
-            return None
-
     def resolve_onebot_media_file_ref(self, media: dict[str, Any]) -> str:
-        file_ref = str(media.get("url") or media.get("path") or "")
+        file_ref = str(media.get("path") or media.get("url") or "")
         if not file_ref:
             return ""
 
@@ -402,10 +308,7 @@ class RocketChatMediaBridge:
             if published_url:
                 media["url"] = published_url
                 return published_url
-            if self._is_base64_media_transport_enabled():
-                base64_ref = self._encode_media_file_to_base64(local_path)
-                if base64_ref:
-                    return base64_ref
+            return ""
 
         return file_ref
 
@@ -853,7 +756,7 @@ class RocketChatMediaBridge:
             ),
         }
 
-        for key in key_candidates.get(target_kind, ()): 
+        for key in key_candidates.get(target_kind, ()):
             value = file_obj.get(key)
             if isinstance(value, str) and value:
                 return await self.client._normalize_media_url(value)
@@ -1873,7 +1776,7 @@ class RocketChatMediaBridge:
                         default_suffix,
                     )
 
-                tmp = tempfile.NamedTemporaryFile(suffix=suffix, delete=False)
+                tmp = self._create_media_temp_file(suffix)
                 tmp_path = tmp.name
                 try:
                     downloaded = 0
@@ -1935,7 +1838,7 @@ class RocketChatMediaBridge:
             )
             return None, None
 
-        tmp = tempfile.NamedTemporaryFile(suffix=default_suffix, delete=False)
+        tmp = self._create_media_temp_file(default_suffix)
         try:
             tmp.write(raw)
             tmp.close()
