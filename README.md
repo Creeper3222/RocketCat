@@ -21,7 +21,8 @@
 
 `v0.1.9` 将 Rocket.Chat 多引用消息对齐为 AstrBot 原生可识别的多个顶层 `Reply` 组件，不再把多引用伪装成 OneBot 合并转发容器。该结构已经通过 RocketCatShell、AstrBot aiocqhttp 适配器以及两个本地生图插件的联合验证。
 
-- 仅当 Rocket.Chat 当前消息包含两个及以上顶层 `attachments[*].message_link` 时进入多引用模式；正文中普通粘贴的多个消息链接不会被误判为多引用。
+- 非加密频道仅当 Rocket.Chat 当前消息包含两个及以上顶层 `attachments[*].message_link` 时进入多引用模式；正文中普通粘贴的多个消息链接不会被误判为多引用。
+- E2EE 加密频道会额外检查解密后正文开头连续的空标签 Markdown 消息链接前缀。Rocket.Chat 8.5 在加密房间里会把多引用编码到这段前缀中，而不是放在普通房间使用的顶层 `attachments[*].message_link`；RocketCatShell 仅在 `e2e=done` 且此前缀连续命中两条及以上引用时才将其归一化为并列 Reply，并把这段前缀从当前正文中剥离，避免把引用链接正文误上报给 OneBot 上游。
 - 每条顶层引用按 Rocket.Chat 附件数组顺序转换为一个普通 OneBot `reply` 段。引用顺序和重复引用均会保留，当前消息正文及自身媒体仍留在当前消息链中。
 - AstrBot aiocqhttp 会逐个调用 `get_msg` 解析这些 `reply` 段，最终得到多个带独立 `chain` 的顶层 `Reply` 组件。被引用消息的文本、图片及其他受支持媒体因此可以按引用分别进入上游。
 - 已验证 `astrbot_plugin_image_generation` 的 `/生图` 与 `astrbot_plugin_grok_suite` 的 `/grok生图` 均可从多个 `Reply.chain` 中原生提取全部参考图，不再依赖 LLM 对图片内容的纯文本转述。
