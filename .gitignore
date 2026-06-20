@@ -1,8 +1,11 @@
 .venv/
 config/
 logs/
+tests/
 data/bots/
 data/plugin_data/
+data/resource/
+data/user_identity/
 __pycache__/
 *.py[cod]
 .pytest_cache/

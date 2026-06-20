@@ -358,6 +358,7 @@ class RuntimeStateEngine:
         self._private_room_by_user_surrogate: dict[str, str] = {}
         self._context_room_by_source: dict[str, dict[str, Any]] = {}
         self._context_room_by_surrogate: dict[str, dict[str, Any]] = {}
+        self._legacy_user_state_detected = False
 
     def bind_writer(self, writer: JournalPersistenceWorker) -> None:
         self._writer = writer
@@ -416,6 +417,11 @@ class RuntimeStateEngine:
             return
 
         with self._lock:
+            legacy_forward = (state.get("forward") or {}).get("user", {}) or {}
+            legacy_reverse = (state.get("reverse") or {}).get("user", {}) or {}
+            legacy_counter = int((state.get("counters") or {}).get("user") or 0)
+            if legacy_forward or legacy_reverse or legacy_counter:
+                self._legacy_user_state_detected = True
             self._message_window_size = DurableIdMap.normalize_message_window_size(
                 state.get("message_window_size") or self._message_window_size
             )
@@ -471,6 +477,8 @@ class RuntimeStateEngine:
                 str(user_surrogate_id): str(room_source_id)
                 for user_surrogate_id, room_source_id in (state.get("private_room_by_user_surrogate") or {}).items()
             }
+            if self._private_room_by_user_surrogate:
+                self._legacy_user_state_detected = True
             self._context_room_by_source = {}
             self._context_room_by_surrogate = {}
             for context_source_id, entry in (state.get("context_room_by_source") or {}).items():
@@ -490,6 +498,33 @@ class RuntimeStateEngine:
     def replay_journal(self, journal_path: Path) -> None:
         for record in JournalPersistenceWorker.iter_records(journal_path) or []:
             self._apply_record(record, persist=False)
+
+    @property
+    def legacy_user_state_detected(self) -> bool:
+        with self._lock:
+            return self._legacy_user_state_detected
+
+    def purge_legacy_user_dependent_state(self) -> None:
+        with self._lock:
+            self._messages_by_source = {}
+            self._messages_by_surrogate = {}
+            self._latest_by_context_sender = {}
+            self._context_sender_message_order = {}
+            self._private_room_by_user_surrogate = {}
+
+    def get_private_room_source_bindings(self) -> dict[str, str]:
+        with self._lock:
+            return dict(self._private_room_by_user_source)
+
+    def replace_private_room_surrogate_bindings(
+        self,
+        bindings: dict[int | str, str],
+    ) -> None:
+        with self._lock:
+            self._private_room_by_user_surrogate = {
+                str(user_surrogate_id): str(room_source_id)
+                for user_surrogate_id, room_source_id in bindings.items()
+            }
 
     def set_message_window_size(self, message_window_size: int) -> None:
         with self._lock:
@@ -757,6 +792,9 @@ class RuntimeStateEngine:
 
     def _apply_id_put(self, record: dict[str, Any], *, persist: bool) -> None:
         namespace = str(record.get("namespace") or "")
+        if namespace == "user":
+            self._legacy_user_state_detected = True
+            return
         if namespace not in DurableIdMap._BASES:
             return
         source_id = str(record.get("source_id") or "")
@@ -786,6 +824,12 @@ class RuntimeStateEngine:
         entry = record.get("entry")
         if not isinstance(entry, dict):
             return
+        sender_surrogate_id = entry.get("sender_surrogate_id")
+        try:
+            if 1_000_000_000 <= int(sender_surrogate_id) < 2_000_000_000:
+                self._legacy_user_state_detected = True
+        except (TypeError, ValueError):
+            pass
         self.put_message(entry) if persist else self._put_message_without_record(entry)
 
     def _apply_private_bind(self, record: dict[str, Any], *, persist: bool) -> None:
@@ -793,6 +837,8 @@ class RuntimeStateEngine:
             user_surrogate_id = int(record.get("user_surrogate_id") or 0)
         except (TypeError, ValueError):
             return
+        if 1_000_000_000 <= user_surrogate_id < 2_000_000_000:
+            self._legacy_user_state_detected = True
         if persist:
             self.bind_private_room(
                 str(record.get("user_source_id") or ""),
@@ -1145,12 +1191,35 @@ class MemoryDurableIdMap(DurableIdMap):
         self._state_engine = state_engine
         self._message_window_size = self.normalize_message_window_size(message_window_size)
         self._on_message_window_changed = on_message_window_changed
+        self._fallback_user_forward: dict[str, int] = {}
+        self._fallback_user_reverse: dict[str, str] = {}
 
     def set_message_window_size(self, message_window_size: Any) -> None:
         self._message_window_size = self.normalize_message_window_size(message_window_size)
         self._state_engine.set_message_window_size(self._message_window_size)
 
     async def get_or_create(self, namespace: str, source_id: str) -> IdMapping:
+        if namespace == "user":
+            from .user_identity import (
+                USER_ID_MAX,
+                USER_ID_MIN,
+                compute_primary_onebot_id,
+            )
+
+            source_key = str(source_id)
+            existing = self._fallback_user_forward.get(source_key)
+            if existing is not None:
+                return IdMapping("user", source_key, existing)
+            surrogate_id = compute_primary_onebot_id(source_key)
+            while str(surrogate_id) in self._fallback_user_reverse:
+                surrogate_id = (
+                    USER_ID_MIN
+                    if surrogate_id >= USER_ID_MAX
+                    else surrogate_id + 1
+                )
+            self._fallback_user_forward[source_key] = surrogate_id
+            self._fallback_user_reverse[str(surrogate_id)] = source_key
+            return IdMapping("user", source_key, surrogate_id)
         mapping, _snapshot = self._state_engine.allocate_mapping(namespace, source_id)
         return mapping
 
@@ -1171,9 +1240,13 @@ class MemoryDurableIdMap(DurableIdMap):
         }
 
     async def get_source(self, namespace: str, surrogate_id: int | str) -> str | None:
+        if namespace == "user":
+            return self._fallback_user_reverse.get(str(surrogate_id))
         return self._state_engine.get_source(namespace, surrogate_id)
 
     async def get_surrogate(self, namespace: str, source_id: str) -> int | None:
+        if namespace == "user":
+            return self._fallback_user_forward.get(str(source_id))
         return self._state_engine.get_surrogate(namespace, source_id)
 
 
@@ -1204,6 +1277,13 @@ def build_runtime_hot_stores(
             "[RocketCatShell] failed to replay runtime journal | path=%s | error=%s",
             journal_path,
             exc,
+        )
+    if state_engine.legacy_user_state_detected:
+        state_engine.purge_legacy_user_dependent_state()
+        logger.warning(
+            "[RocketCatShell][UserIdentity] 检测到旧版递增 user 映射，"
+            "已清理旧用户反向索引和含旧用户 ID 的消息缓存；"
+            "room/message/thread/context 映射保持不变。"
         )
 
     writer = JournalPersistenceWorker(

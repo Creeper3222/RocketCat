@@ -1,11 +1,20 @@
-# Core runtime dependencies for the rebuild branch hot-path runtime.
+# RocketCatShell v0.1.9 runtime dependencies.
+# HTTP, Rocket.Chat REST/DDP and OneBot reverse WebSocket transport.
 aiohttp>=3.9,<4
+# Rocket.Chat E2EE.
 cryptography>=44.0.3
+# WebUI/API runtime.
 fastapi>=0.110,<1
+# JSON hot path.
 orjson>=3.10,<4
+# Host diagnostics and #system.
 psutil>=6,<7
+# FastAPI UploadFile/form parsing.
 python-multipart>=0.0.9,<1
+# Interactive Windows terminal backend; subprocess fallback remains available.
 pywinpty>=2.0,<3; platform_system == "Windows"
+# Plugin metadata/configuration.
 PyYAML>=6,<7
+# WebUI ASGI server and WebSocket implementation.
 uvicorn>=0.23,<1
 websockets>=12,<16
