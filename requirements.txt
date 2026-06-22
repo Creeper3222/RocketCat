@@ -13,5 +13,7 @@ psutil>=6,<7
 python-multipart>=0.0.9,<1
 # Interactive Windows terminal backend; subprocess fallback remains available.
 pywinpty>=2.0,<3; platform_system == "Windows"
-# WebUI ASGI server and WebSocket implementation.
+# WebUI ASGI server.
 uvicorn>=0.23,<1
+# Uvicorn WebSocket backend for the WebUI terminal and realtime channels.
+websockets>=12,<16
