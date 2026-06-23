@@ -1,4 +1,4 @@
-# RocketCatShell v0.2.0 runtime dependencies.
+# RocketCatShell v0.2.1 runtime dependencies.
 # HTTP, Rocket.Chat REST/DDP and OneBot reverse WebSocket transport.
 aiohttp>=3.9,<4
 # Rocket.Chat E2EE.
