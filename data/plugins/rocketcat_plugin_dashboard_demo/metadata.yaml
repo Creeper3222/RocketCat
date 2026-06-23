@@ -1,7 +1,0 @@
-name: rocketcat_plugin_dashboard_demo
-display_name: Dashboard 展示插件
-desc: RocketCatShell v0.2.1 内置 Dashboard 链路验收插件，仅展示 UI 与 Bridge 上下文，不处理 Bot 消息。
-version: v0.2.1
-author: Creeper3222
-repo: ""
-dashboard_page: dashboard
