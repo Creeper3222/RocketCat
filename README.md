@@ -122,7 +122,7 @@ Rocket.Chat 兼容层同步完成以下调整：
 - 运行诊断页的主机 CPU / 内存摘要已升级为更直观的环形指示器视图，并补充系统总占用与 Shell 进程占用的双层视觉表达，配合在线 Bot / Snapshot / Journal 汇总，更适合长时间运行时做快速巡检。
 - OneBot reverse WebSocket 客户端现在会显式放宽 `aiohttp` 的入站消息大小上限，并在断链日志里补充 `close_code`。这修复了 AstrBot 侧较大的 `base64://` 图片动作在进入 RocketCatShell 前就触发 reverse WS 断开的问题，像 `astrbot_plugin_grok_suite` 这类 2K 大图不再因为默认 `4 MiB` 帧限制在上传到 Rocket.Chat 之前就被截断。
 - 入站翻译热路径继续做了针对性优化：引用上下文任务只在确实可能存在引用时才构建；回复来源解析结果复用，避免重复扫描正文；纯文本引用不再误走 quoted media 提取；消息注册表 entry 复制路径改为面向 JSON-like 结构的轻量 clone；媒体描述提取改为单次遍历并为扁平 attachment 场景增加快速路径，继续压低高频图片 / 引用 / 混合消息场景下的固定开销。
-- `tools/benchmark_inbound_translate.py` 现在支持 `--profile realistic`，可直接带入更接近真实环境的 room info / quote fetch / media delay，并新增 `quote_image`、`media_mix` 场景，避免只靠零延迟微基准得到过于理想化的结论。
+- 开发者源码工具 [tools/benchmark_inbound_translate.py](https://github.com/Creeper3222/RocketCat/blob/main/tools/benchmark_inbound_translate.py) 现在支持 `--profile realistic`，可直接带入更接近真实环境的 room info / quote fetch / media delay，并新增 `quote_image`、`media_mix` 场景，避免只靠零延迟微基准得到过于理想化的结论。该工具不包含在最小运行 ZIP 中。
 
 升级到 `v0.1.6` 不需要迁移 `v0.1.5` 的配置目录、热存储 snapshot / journal 或本地插件数据；如果浏览器已经打开旧版 WebUI，刷新页面以获取最新静态资源即可。
 
@@ -173,7 +173,7 @@ Rocket.Chat 兼容层同步完成以下调整：
 - 新增房间信息缓存 TTL 配置 `room_info_cache_ttl_seconds`，默认 300 秒，避免同一房间元信息被高频重复拉取。
 - 支持可选性能追踪：可通过环境变量 `ROCKETCAT_PERF_TRACE` 或 bot 原始配置 `perf_trace_enabled` 打开，记录 `translate` / `emit_event` 以及入站 `room_lookup`、`mapping_alloc`、`quote_contexts`、`message_store`、`batch_commit` 等阶段耗时。
 - 猫猫日志现在也会捕获 `RocketCatPerf` 性能追踪日志，并提供左上角 `Perf` 开关用于独立过滤这类日志。
-- 新增 [tools/benchmark_inbound_translate.py](d:/git_test/RocketCatShell/v1/rocketcat_shell_rebuild/tools/benchmark_inbound_translate.py)，可在本地对比 control / rebuild 两条入站翻译路径的延迟差异。
+- 新增开发者源码工具 [tools/benchmark_inbound_translate.py](https://github.com/Creeper3222/RocketCat/blob/main/tools/benchmark_inbound_translate.py)，可在本地对比 control / rebuild 两条入站翻译路径的延迟差异；该工具不包含在最小运行 ZIP 中。
 - message 索引策略改为固定窗口：只保留最近 N 条 message 映射，超出窗口时裁剪最旧映射，WebUI 的“重建索引”只做窗口整理与关联消息缓存重建，不再保留旧版 reset / compact 语义。
 
 ---
@@ -302,7 +302,7 @@ RocketCatShell 当前这一版明确不承诺合并转发消息语义。
 
 - `v0.1.4` 以后，JSON 编解码优先走 `orjson`，Rocket.Chat / OneBot 连接复用更积极，普通远端媒体下载会直接流式写入临时文件，E2EE 媒体上传也会分块加密到临时密文文件后再上传。
 - WebUI 控制面增加插件目录签名缓存、server branding TTL 缓存和猫猫日志长轮询，降低空闲打开管理页面时的磁盘扫描、网络请求和 JSON 轮询开销。
-- [tools/benchmark_inbound_translate.py](d:/git_test/RocketCatShell/v1/rocketcat_shell_rebuild/tools/benchmark_inbound_translate.py) 可用于本地构造文本 / 引用 / 线程 / 图片场景，对比 control 与 rebuild 两条入站翻译链路的延迟。
+- 开发者源码工具 [tools/benchmark_inbound_translate.py](https://github.com/Creeper3222/RocketCat/blob/main/tools/benchmark_inbound_translate.py) 可用于本地构造文本 / 引用 / 线程 / 图片场景，对比 control 与 rebuild 两条入站翻译链路的延迟；该工具不包含在最小运行 ZIP 中。
 
 ---
 
