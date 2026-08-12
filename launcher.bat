@@ -8,6 +8,7 @@ pushd "%ROOT%"
 set "LOCAL_PYTHON=%ROOT%\.venv\Scripts\python.exe"
 set "REQUIREMENTS_FILE=%ROOT%requirements.txt"
 set "DEPENDENCY_CHECKER=%ROOT%tools\check_requirements.py"
+set "UPDATE_HELPER=%ROOT%tools\update_helper.py"
 set "BOOTSTRAP_PYTHON="
 set "PYTHON_CMD="
 
@@ -44,6 +45,18 @@ if not exist "%LOCAL_PYTHON%" (
         exit /b 1
     )
     set "PYTHON_CMD=%LOCAL_PYTHON%"
+)
+
+if exist "%UPDATE_HELPER%" (
+    echo Checking interrupted update transactions...
+    "%PYTHON_CMD%" "%UPDATE_HELPER%" recover "%ROOT%." --active-transaction "%ROCKETCATSHELL_UPDATE_TRANSACTION%"
+    if errorlevel 1 (
+        echo.
+        echo An interrupted RocketCatShell update could not be recovered safely.
+        echo Startup has been stopped to protect this installation.
+        popd
+        exit /b 1
+    )
 )
 
 if not exist "%REQUIREMENTS_FILE%" (

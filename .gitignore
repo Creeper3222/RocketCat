@@ -5,8 +5,14 @@
 config/
 logs/
 tests/
+!tests/
+tests/*
+!tests/v022/
+!tests/v022/**
 data/bots/
 data/temp/
+data/update/
+data/perf/
 data/plugin_data/
 data/resource/
 data/user_identity/
@@ -20,6 +26,7 @@ __pycache__/
 .pytest_cache/
 .coverage
 htmlcov/
+test-artifacts/
 build/
 dist/
 .idea/
@@ -34,5 +41,6 @@ tools/deploy_user_identity_windows_live.ps1
 *.bak
 *.tmp
 *.zip
+/update-manifest.json
 .DS_Store
 Thumbs.db

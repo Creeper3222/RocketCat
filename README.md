@@ -7,174 +7,13 @@
 
 本项目的目标不是继续做一个“宿主里的桥接插件”，而是把 RocketCat 发展成一套真正独立的 `Rocket.Chat <-> OneBot v11` 桥接软件。
 
-> 当前 README 对应版本为 `v0.2.1`。本版在保持 v0.2.0 性能与资源治理行为不变的前提下，将插件重构为全局单例，并新增不占用额外端口的 RocketCat 原生内置 Dashboard 链路。
-
-## v0.2.1（全局插件实例与内置 Dashboard）
-
-- 每个启用插件现在只创建一个全局实例；多个 Bot 仅保留轻量 runtime binding，降低多 Bot 部署中的插件内存、后台任务与初始化开销。
-- 插件可在 `pages/<page_name>/index.html` 提供管理页面。WebUI 仅为拥有页面的插件显示 Dashboard 图标，并在 RocketCatShell 内部全屏打开。
-- Dashboard 页面运行在无 `allow-same-origin` 的受限 iframe 中，通过 `window.RocketCatPluginDashboard` Bridge 使用父 WebUI 的认证链路访问插件 API、上传下载与 SSE。
-- 插件可在全局 `on_initialize()` 中通过 `PluginContext.register_dashboard_api()` 和 `register_dashboard_sse()` 注册控制面接口；关闭、禁用、卸载或重载时会撤销页面令牌并终止 SSE。
-- `on_load(runtime)` 与 `on_unload(runtime)` 继续表示单个 Bot runtime 的绑定和解绑；新增 `on_terminate()` 负责全局插件最终清理。
-- 内置指令与 I Am Thinking 适配器的可变状态均按 runtime 隔离，避免不同 Bot 使用相同房间或消息 ID 时互相影响。
-- 纯 Dashboard 插件只需提供 `pages/<page_name>/index.html` 等静态页面即可，不必实现 `main.py` 或处理任何 Bot 消息。
-
 这意味着：
 
 - RocketCatShell 自己拥有 `config/`、`data/`、`logs/` 目录边界。
 - RocketCatShell 自己提供本地 WebUI、登录认证、Bot 管理和插件管理。
 - RocketCatShell 仍然可以作为 OneBot reverse WebSocket 客户端与 AstrBot 协同，但不再依赖 AstrBot 插件宿主才能运行。
 
----
-
-## v0.2.0（性能、效率与资源治理）
-
-- 消息窗口分配不再在每条消息上复制完整映射；只有窗口变化、手动整理或 checkpoint 时才生成完整快照。
-- 用户身份缓存命中直接在事件循环内完成；同一服务器的多个 Bot 共享 SQLite 连接、LRU 缓存与批量 `ensure_mappings`。
-- E2EE 媒体采用流式下载、AES-CTR 解密、SHA-256 计算和原子落盘；`data/temp` 内已缓存文件直接发布 URL。
-- OneBot 出站队列、用户/身份/媒体缓存、文件日志、WebUI 日志和终端会话均具有明确上限。
-- Bot 配置采用增量 reconciliation；修改一个 Bot 不再重启所有 Bot，插件配置更新只重建插件 binding。
-- WebUI 新增“性能与资源”高级设置与队列、缓存、媒体和重载诊断数据。
-- 默认策略为 `balanced`，普通用户无需调参；旧配置缺少新增字段时自动采用安全默认值。
-
-## v0.1.9（多引用与 Rocket.Chat 8.x 兼容更新）
-
-`v0.1.9` 将 Rocket.Chat 多引用消息对齐为 AstrBot 原生可识别的多个顶层 `Reply` 组件，不再把多引用伪装成 OneBot 合并转发容器。该结构已经通过 RocketCatShell、AstrBot aiocqhttp 适配器以及两个本地生图插件的联合验证。
-
-- 非加密频道仅当 Rocket.Chat 当前消息包含两个及以上顶层 `attachments[*].message_link` 时进入多引用模式；正文中普通粘贴的多个消息链接不会被误判为多引用。
-- E2EE 加密频道会额外检查解密后正文开头连续的空标签 Markdown 消息链接前缀。Rocket.Chat 8.5 在加密房间里会把多引用编码到这段前缀中，而不是放在普通房间使用的顶层 `attachments[*].message_link`；RocketCatShell 仅在 `e2e=done` 且此前缀连续命中两条及以上引用时才将其归一化为并列 Reply，并把这段前缀从当前正文中剥离，避免把引用链接正文误上报给 OneBot 上游。
-- 每条顶层引用按 Rocket.Chat 附件数组顺序转换为一个普通 OneBot `reply` 段。引用顺序和重复引用均会保留，当前消息正文及自身媒体仍留在当前消息链中。
-- AstrBot aiocqhttp 会逐个调用 `get_msg` 解析这些 `reply` 段，最终得到多个带独立 `chain` 的顶层 `Reply` 组件。被引用消息的文本、图片及其他受支持媒体因此可以按引用分别进入上游。
-- 已验证 `astrbot_plugin_image_generation` 的 `/生图` 与 `astrbot_plugin_grok_suite` 的 `/grok生图` 均可从多个 `Reply.chain` 中原生提取全部参考图，不再依赖 LLM 对图片内容的纯文本转述。
-- 引用消息优先通过 Rocket.Chat 消息接口获取完整内容；消息已删除、不可访问或获取失败时，使用当前引用附件快照回退。
-- 消息窗口重建、运行状态重启恢复和引用 ID 淘汰均支持多个并列 Reply；多引用日志使用独立的“并列原生 Reply”格式，不再复用单链引用日志。
-- 已移除实验阶段加入的 6xxx forward ID 命名空间、合并转发容器缓存、`get_forward_msg` 实现及关联热存储清理逻辑。旧 snapshot / journal 中的实验性 forward 命名空间会在加载后被忽略，并在后续快照中自然消失。
-- RocketCatShell 仍未定义真正的 Rocket.Chat 合并转发语义；`get_forward_msg`、`send_group_forward_msg` 和 `send_private_forward_msg` 当前统一返回不支持。
-
-用户身份映射同步改为安全的确定性 11 位 ID：
-
-- Rocket.Chat 不可变 `userId` 使用 `sha256-linear-v1` 映射到 `10000000000–99999999999`。正常用户即使清空单个 bot 的 runtime 数据、改变首次发言顺序，也会得到相同 OneBot ID。
-- 用户只在 bot 登录或首次出现在消息、成员、mention 等链路时建立映射；启动过程不会调用 `users.list` 或枚举服务器全部账号。
-- 主槽冲突使用线性开放地址法向后探测，并在服务器级 SQLite 注册表中持久化实际映射。同一 Rocket.Chat 服务器的多个 RocketCat bot 共用映射与人工 override。
-- bot 自身的 OneBot `self_id` 同样由登录账号的 Rocket.Chat `userId` 生成；Bot 设置不再提供可独立配置的 `onebot_self_id`。
-- WebUI 的 Bot 编辑页提供“审查 User 映射列表”，可分页搜索 userId、用户名、昵称和 OneBot ID。只有 OneBot ID 可编辑；已被实际占用的 ID 会拒绝保存。
-- 发生哈希冲突时，“猫猫日志”会记录先入用户、后入用户、主槽、最终 ID 和偏移量，并写入每个相关 bot 的 `re_waring.json`。未解决提醒会在该 bot 每次启动时重复输出。
-- 冲突列表中先入槽位者使用蓝底白字，后入偏移者使用红底白字。人工修改后通过正向哈希和唯一索引重新验证；SHA-256 不存在也不伪造所谓“反向哈希”。
-
-Rocket.Chat 兼容层同步完成以下调整：
-
-- 支持范围明确为 Rocket.Chat `7.10.x–8.5.x`。启动时通过公开的 `/api/info` 读取版本；低于 `7.10.0` 会明确拒绝启动，无法读取版本时使用能力探测模式。
-- DDP/WebSocket 继续负责 resume 登录和消息订阅；typing 与 `e2e.requestSubscriptionKeys` 优先通过 `/api/v1/method.call/:method` 调用。只有 7.10 或未知版本在该端点明确不存在时才回退原始 DDP method。
-- Rocket.Chat 8.x 上传固定使用 `rooms.media/:rid` + `rooms.mediaConfirm/:rid/:fileId`，不会再尝试 8.0 已移除的 `rooms.upload/:rid`；7.10 仅在新版端点返回 404、405、410 或 501 时回退旧端点。
-- 普通上传确认会发送 `msg`、`description`、`fileName` 和可选 `tmid`。上传前会清理危险文件名，并优先依据文件签名判断 MIME；扩展名与实际内容冲突时使用匹配内容的安全文件名。
-- E2EE REST 请求按 Rocket.Chat 8.3+ 的严格 schema 构造，不发送未知字段；E2EE 媒体确认对齐 8.5 的 `content` + `fileContent` 两层密文结构，不在确认请求中暴露明文文件名和描述。
-- 对齐 Rocket.Chat 8.2+ 的加密消息合并行为：服务端已经标记为 `removed-file` 的附件不会被解密出来的旧附件内容重新复活。
-- Rocket.Chat 8.5 在 E2EE 房间会把多引用编码为解密正文开头连续的空标签 Markdown 消息链接，而不是普通房间的 `attachments[*].message_link`。RocketCatShell 会仅对 `e2e=done` 的这种系统前缀格式做等价归一化，并按原顺序生成多个顶层 OneBot `reply`；普通粘贴链接、正文中间链接和单引用不会被误判为多引用。
-- E2EE 图片解密后会进入所有 Bot 共用的 `data/temp` 受控媒体缓存，并通过仅监听 `127.0.0.1`、使用随机能力令牌的 WebUI HTTP 地址交给 OneBot 上游；旧消息快照里的系统临时路径或 `base64://` 引用也会在 `get_msg` 时重新发布。这样 `/生图` 与 `/grok生图` 接收到的参考图来源和非加密频道一致，不再依赖 AstrBot 接受 RocketCatShell 的本地 `%TEMP%` 路径。
-- v0.1.9 热修复把上述媒体代理统一并入 WebUI 端口，固定使用 `/_rocketcat/media/{bot_id}/{token}/{filename}` 路由，不再为每个 Bot 创建随机监听端口。图片、音频和视频都以令牌 HTTP URL 上报，AstrBot 会通过标准下载链路自动缓存到自身 `data/temp`。
-- RocketCatShell 自身的解密媒体与下载临时文件统一保存到项目级 `data/temp`，不再为每个 Bot 创建 `media_cache`；旧的 `data/bots/_shared_media` 也已退役。
-- “启用 Base64 传输媒体”设置已退役；旧 `shell.json` 或导入配置中的字段会被兼容忽略并在重新保存后清理。AstrBot → RocketChat 的协议级 `base64://` 上传以及历史 Base64 缓存转 HTTP URL 的能力仍然保留。
-- 运行诊断与 `#system` 输出增加 Rocket.Chat 服务端版本、兼容状态、当前上传端点和 method 传输方式。
-
-升级到 `v0.1.9` 不需要迁移 Bot 配置。旧版实验性合并转发缓存不会继续使用；普通 message、user、room、thread 和 context 映射会照常恢复。
-
----
-
-## v0.1.8（系统终端更新）
-
-`v0.1.8` 新增 `系统终端` WebUI 页面，第一阶段对齐 NapCat 的终端管理体验，让管理员可以直接在 WebUI 内创建和切换多个本地终端会话。
-
-- 左侧导航新增 `系统终端`，图标与页面结构对齐 NapCat 的终端入口。
-- 页面右上角新增终端创建按钮；没有终端时显示空状态提示，点击按钮即可创建终端。
-- 每个终端使用独立 UUID 作为默认标签名，上方 tab 条可点击切换当前终端，也可关闭指定终端。
-- 终端 tab 支持横向拖拽排序，排序结果会同步给后端会话列表。
-- 后端新增 `/api/terminal/list`、`/api/terminal/create`、`/api/terminal/{id}/close`、`/api/terminal/order` 与 `/api/ws/terminal/{id}`，终端 WebSocket 复用当前 WebUI 登录 cookie 鉴权。
-
-`v0.1.8` 首版终端提供轻量子进程后端；当前 Windows 运行依赖同时声明 `pywinpty`，可用时使用 WinPTY 交互后端，不可用时仍会回退子进程实现。
-
----
-
-## v0.1.7（内置文件管理更新）
-
-`v0.1.7` 的首要目标是为 RocketCatShell 增加类似 NapCat 的内置文件管理入口，并为后续 Docker 版迁移做准备。用户可以在 WebUI 内浏览 RocketCatShell 项目根目录、进入子目录、返回上级目录、刷新文件列表、打开 UTF-8 文本文件进行查看或编辑、预览图片文件，并在根目录边界内新建文件、创建目录、上传文件、重命名、批量删除、移动和下载文件。
-
-- 新增 `文件管理` WebUI 页面。文件管理边界固定为 RocketCatShell 项目根目录，前后端 API 都只接受根目录内的相对路径，拒绝访问 `..`、系统绝对路径、盘符路径或符号链接越界目标。
-- 新增文件 API：`GET /api/files` 用于列目录，`POST /api/files/read` 用于文本预览，`POST /api/files/write` 用于保存允许编辑的文本文件，`POST /api/files/create` 用于新建文件或目录，`POST /api/files/upload` 用于上传文件，`POST /api/files/rename` 用于重命名单个项目，`POST /api/files/delete` 用于删除选中项目，`POST /api/files/move` 用于移动选中项目，`GET /api/files/download` 用于单项下载，`POST /api/files/download` 用于将选中项目打包为 `files.zip` 下载。
-- 文件表格新增左侧复选框，多选后才会展开批量删除、移动和下载按钮；每一行也新增 `操作` 列，可单独重命名、移动、复制相对路径、下载或删除该项。删除前会弹出二次确认，移动会弹出目标目录树，只允许选择 RocketCatShell 根目录边界内的目录，批量下载会把选中的文件和目录一起封装为 `files.zip`。
-- 新建功能支持在 WebUI 弹窗中选择 `文件` 或 `目录`；同名目标会被拒绝，避免覆盖现有项目。
-- 上传功能支持拖拽文件到上传框，也支持点击按钮打开系统文件选择器。单次最多上传 20 个文件，单文件上限 100 MiB；上传文件夹结构时会在项目根目录边界内自动创建所需父目录，同名上传文件会自动追加随机后缀，避免覆盖。
-- 文本预览最多读取前 `1 MiB` 内容，超出时会在页面提示内容已截断；允许编辑的普通文本文件可在 WebUI 内修改并保存，保存前会弹出二次确认；二进制文件和非 UTF-8 文本不会返回文件内容。
-- RocketCatShell 核心源码、WebUI 静态资源、工具脚本和两个内置插件源码只能查看，不能通过文件管理修改、移动或删除；用户在 `data/resource` 等非保护目录中创建的 `.py` 或其他文本文件仍可自由编辑。
-- 图片文件会在文件列表中显示缩略图，点击后可在 WebUI 内放大预览；图片预览同样只允许读取 RocketCatShell 根目录边界内的文件。
-- 对明确的敏感持久化数据文件增加二次鉴权，包括 `config/shell.json`、`config/bots.json`、`config/plugins_config/*.json` 和 `data/bots/**/runtime_state.json`。鉴权密码复用 WebUI 登录认证 / 文件管理鉴权密码，密码只通过请求体提交，不放入 URL；鉴权文件保存前会再次提示修改风险。
-- `基础设置` 中的 WebUI 密码文案已更新为 `WebUI 登录认证 / 文件管理鉴权密码`，强调同一个密码同时用于登录 WebUI 和打开敏感持久化数据文件。
-
-升级到 `v0.1.7` 不需要迁移现有配置或运行态数据。如果浏览器已经打开旧版 WebUI，刷新页面以获取最新静态资源即可。
-
----
-
-## v0.1.6（诊断可观测性与性能收口更新）
-
-`v0.1.6` 建立在 `v0.1.5` 的内置指令、Shell 插件系统和独立 WebUI 管理面之上。这一版不再继续增加新的大块宿主能力，而是把这套独立 Shell 更像“可发布软件”地收口：一方面补上更直观、更低延迟的运行诊断与状态可观测性，另一方面把入站翻译热路径和 benchmark 工具一起推进到更贴近真实负载的状态，方便后续继续做针对性优化。
-
-- `/api/diagnostics` 的主机快照采集现在改为短 TTL 缓存，避免每次请求都重新执行一次固定 CPU 采样等待；内置 `#system` 指令也复用同一套缓存逻辑，页面刷新、轮询和房间内诊断命令不再重复触发整段采样开销。
-- 运行诊断已从“网络配置”页拆分为独立导航页，并新增主机快照缓存状态、快照年龄、TTL 等元数据展示。WebUI 现在可以直接区分当前是缓存命中、实时采样还是采样失败，而不是只看到一份静态诊断结果。
-- 运行诊断页的主机 CPU / 内存摘要已升级为更直观的环形指示器视图，并补充系统总占用与 Shell 进程占用的双层视觉表达，配合在线 Bot / Snapshot / Journal 汇总，更适合长时间运行时做快速巡检。
-- OneBot reverse WebSocket 客户端现在会显式放宽 `aiohttp` 的入站消息大小上限，并在断链日志里补充 `close_code`。这修复了 AstrBot 侧较大的 `base64://` 图片动作在进入 RocketCatShell 前就触发 reverse WS 断开的问题，像 `astrbot_plugin_grok_suite` 这类 2K 大图不再因为默认 `4 MiB` 帧限制在上传到 Rocket.Chat 之前就被截断。
-- 入站翻译热路径继续做了针对性优化：引用上下文任务只在确实可能存在引用时才构建；回复来源解析结果复用，避免重复扫描正文；纯文本引用不再误走 quoted media 提取；消息注册表 entry 复制路径改为面向 JSON-like 结构的轻量 clone；媒体描述提取改为单次遍历并为扁平 attachment 场景增加快速路径，继续压低高频图片 / 引用 / 混合消息场景下的固定开销。
-- 开发者源码工具 [tools/benchmark_inbound_translate.py](https://github.com/Creeper3222/RocketCat/blob/main/tools/benchmark_inbound_translate.py) 现在支持 `--profile realistic`，可直接带入更接近真实环境的 room info / quote fetch / media delay，并新增 `quote_image`、`media_mix` 场景，避免只靠零延迟微基准得到过于理想化的结论。该工具不包含在最小运行 ZIP 中。
-
-升级到 `v0.1.6` 不需要迁移 `v0.1.5` 的配置目录、热存储 snapshot / journal 或本地插件数据；如果浏览器已经打开旧版 WebUI，刷新页面以获取最新静态资源即可。
-
----
-
-## v0.1.5（内置指令与运维增强更新）
-
-`v0.1.5` 建立在 `v0.1.4` 的独立 Shell、热存储 runtime 和本地插件系统之上，重点不再是继续压热路径性能，而是补齐一层更适合日常使用与正式发布的本地控制能力，并补上 Rocket.Chat 新旧上传接口并存时期的兼容缺口。
-
-- 新增本地内置指令插件 `rocketcat_plugin_built_in_command`。它通过 Shell 插件系统直接拦截 Rocket.Chat 入站精确纯文本指令，目前实现 `#rocketcat` 与 `#system` 两条命令，不再要求上游 AstrBot 侧参与处理。
-- `#rocketcat` 用于返回当前桥接 Bot 的基础信息：包括客户端显示名、登录账号、显示昵称、OneBot self_id、连接状态和 Rocket.Chat 服务器地址，并追加发送 bot 头像与服务器 branding 头像，方便在房间内快速确认“当前是谁、连的是哪台、状态是否正常”。
-- 媒体上传链路优化 plain upload 端点自适应：默认优先使用 Rocket.Chat 8.0.0+ 的 `rooms.media/:rid` + `rooms.mediaConfirm/:rid/:fileId`，失败时回退旧版 `rooms.upload/:rid`；每个 Bot 独立记忆可用端点，后续上传直接走自身最适链路。
-- Rocket.Chat 8.x 的 `rooms.media/:rid` 不再像旧 `rooms.upload/:rid` 那样直接完成发图消息创建，因此 plain 媒体上传会在上传成功后继续调用 `rooms.mediaConfirm/:rid/:fileId`，真正把图片或文件发进房间；如果缓存的旧版端点在服务器升级后失效，也会反向回退到新版链路。同时对同服远端媒体（尤其是 bot 自己的 `/avatar/{username}`）会自动补 `rc_uid/rc_token` 登录态并按响应 `Content-Type` 选择正确后缀，修复本地新服里 `#rocketcat` 与 WebUI 基础信息页拿不到 bot 头像、或把默认 SVG 头像误当作 PNG 上传后显示损坏的问题。
-- `#rocketcat` 的插件直发媒体链路现在会在不需要 OneBot 映射时跳过 5 秒自回显等待，并把内置指令自回显抑制从一次性 `source_id` 扩展为短 TTL 的 `source_id + 房间/正文签名` 匹配，修复新旧服混跑时加密房间第二段回复超时和旧服非加密房间重复回显的问题。
-- `#system` 用于返回当前 RocketCatShell 进程所在主机的系统快照：包括版本号、Python 版本、主机名、系统信息、CPU 商品名 / 核心数 / 主频 / 系统占用 / Shell 进程占用，以及内存总量 / 已用 / 可用 / 当前进程占用。该命令依赖新增运行依赖 `psutil`。
-- `rocketcat_plugin_adapt_iamthinking` 不再只做 reaction 映射。现在它可以在继续兼容 `set_msg_emoji_like` 的同时，把“思考中 / 已完成”阶段独立映射为 Rocket.Chat typing 指示器；reaction 与 typing 在插件设置页可分别开关，长时间思考还会自动续期 typing 心跳。
-- Shell 启动层新增单实例锁：同一项目目录下的第二个 RocketCatShell 会在 runtime 初始化之前直接退出，不再像旧行为那样因为 WebUI 端口回退而悄悄拉起第二份 runtime，从根源上避免重复订阅和重复上报。
-
-升级到 `v0.1.5` 不需要迁移 `v0.1.4` 的配置目录或 runtime 数据。如果你通过 `launcher.bat` 启动，启动器会按 `requirements.txt` 自动检查并补装包括 `psutil` 在内的新增依赖；只有你手动直接运行 `python -m rocketcat_shell` 时，才需要先自行执行 `pip install -r requirements.txt`。
-
----
-
-## v0.1.4（性能优化更新）
-
-`v0.1.4` 建立在 `v0.1.3` 的 memory-authoritative runtime 之上，目标不是改变桥接语义或目录布局，而是继续压低热路径延迟、内存峰值和 WebUI 空闲开销。
-
-- P0 热路径优化：热存储减少重复深拷贝，source / surrogate message 索引共享同一 entry；入站消息注册表改为紧凑字段存储，需要 hydrate 时再重建 OneBot 事件；Rocket.Chat 入站 DDP 消息改为按房间分片队列处理，同房间保持 FIFO，不同房间可并行。
-- P0 去重优化：入站重复消息签名改为轻量字段签名，并对附件、文件、URL、mentions 等大结构使用稳定哈希，降低重复 update 判断成本。
-- P1 JSON / 连接优化：新增统一 JSON codec，优先使用 `orjson`；HTTP session 使用连接池、DNS TTL 和 keepalive；WebSocket 发送统一走预序列化字符串，减少 aiohttp 默认 JSON 路径开销。
-- P1 媒体优化：普通远端媒体下载改为边下载边写临时文件；E2EE 媒体上传改为原文件分块读取、CTR 分块加密到临时密文文件，再以文件流上传；Base64 媒体增加大小预判和严格解码；Bot 的远端媒体大小上限同时约束媒体下载与上传。
-- P1 插件 action 优化：插件可声明 `handled_actions`，运行时按 action 精确分发，未声明的旧插件继续作为 fallback，减少 OneBot action 广播式试探。
-- P2 WebUI / 插件控制面优化：插件列表和详情增加目录签名缓存，未变化时不再反复扫目录和解析配置；基础信息页 Rocket.Chat server branding 增加 TTL 缓存；猫猫日志从 1 秒短轮询改为长轮询，空闲时显著减少 WebUI 请求和 JSON 响应。
-
-升级到 `v0.1.4` 不需要迁移 `v0.1.3` 的 runtime 数据；需要重新安装依赖以获得 `orjson` 快路径。
-
----
-
-## v0.1.3（破坏性更新）
-
-`v0.1.3` 对 RocketCatShell 的运行态、持久化模型、WebUI 管理边界和插件承载方式做了重构级调整。
-
-- 本次更新不承诺兼容 `v0.1.2` 及更早版本的旧配置文件、旧运行态持久化数据、旧目录结构，以及“依附 AstrBot 插件宿主”的部署方式。
-- 升级到 `v0.1.3` 前，请先自行备份旧版本目录，再按当前 README 描述的独立 Shell 目录重新部署或迁移。
-
-- 桥接运行态已切换为以内存为权威的热存储：ID 映射、消息注册表、私聊房间映射和群上下文绑定都会在热路径常驻内存，不再依赖旧版 JSON 逐条读写。
-- 持久化改为单写入后台 worker：运行态会以 `runtime.snapshot.bin` + `runtime.journal.bin` 的组合落盘，启动时先载入快照再回放 journal，用于恢复最近状态而不是拖慢收发热路径。
-- 入站翻译链路新增批量提交与更细粒度的热路径优化：房间信息查询、引用构建、提及提取、媒体描述提取都会尽量复用结果，降低图片 / 引用 / 提及混合消息的处理成本。
-- 新增房间信息缓存 TTL 配置 `room_info_cache_ttl_seconds`，默认 300 秒，避免同一房间元信息被高频重复拉取。
-- 支持可选性能追踪：可通过环境变量 `ROCKETCAT_PERF_TRACE` 或 bot 原始配置 `perf_trace_enabled` 打开，记录 `translate` / `emit_event` 以及入站 `room_lookup`、`mapping_alloc`、`quote_contexts`、`message_store`、`batch_commit` 等阶段耗时。
-- 猫猫日志现在也会捕获 `RocketCatPerf` 性能追踪日志，并提供左上角 `Perf` 开关用于独立过滤这类日志。
-- 新增开发者源码工具 [tools/benchmark_inbound_translate.py](https://github.com/Creeper3222/RocketCat/blob/main/tools/benchmark_inbound_translate.py)，可在本地对比 control / rebuild 两条入站翻译路径的延迟差异；该工具不包含在最小运行 ZIP 中。
-- message 索引策略改为固定窗口：只保留最近 N 条 message 映射，超出窗口时裁剪最旧映射，WebUI 的“重建索引”只做窗口整理与关联消息缓存重建，不再保留旧版 reset / compact 语义。
+> 各版本的功能变更、兼容性调整、问题修复和迁移说明统一记录在 [CHANGELOG.md](CHANGELOG.md)。README 仅维护当前功能、配置与使用方式。
 
 ---
 
@@ -208,11 +47,11 @@ AstrBot or other compatible OneBot-side workflow
 
 - 支持 Rocket.Chat 频道、私有群组、私聊消息桥接为 OneBot v11 语义。
 - 支持统一 Bot 注册表，不再使用主 bot / 副 bot 的分层持久化模型。
-- 内置独立 WebUI，可管理网络配置、基础信息、运行日志、基础设置和本地插件。
+- 内置独立 WebUI，可管理网络配置、基础信息、运行诊断、日志、本地插件、文件、系统终端和基础设置。
 - WebUI 默认启用登录门禁，初始密码为 `123456`。
 - 支持自定义 WebUI 端口，并在端口占用时自动回退到可用端口。
-- 支持配置导出 / 导入，统一打包 Bot 设置、WebUI 密码 / 端口、消息映射窗口条数上限和本地插件主配置。
-- 支持自动重连、最大连续重连次数限制、自动停用失败 Bot。
+- 支持配置导出 / 导入，统一打包 Bot 设置、WebUI 密码 / 端口、消息映射窗口条数上限、卡片顺序和本地插件主配置。
+- Rocket.Chat 连接支持可配置的重连延迟、最大连续重连次数限制及失败后自动停用；OneBot 上游采用独立的 5 秒后台等待，不会因为上游未启动而停用 Bot。
 - 支持动态订阅新房间，机器人被拉入新房间后无需重启。
 - 支持兼容 AstrBot 唤醒词 / 指令的入站消息格式，标准 `message` / `raw_message` 保持为纯当前用户正文。
 - 支持 OneBot 风格的群聊、私聊、消息查询、群成员查询、登录信息查询。
@@ -230,7 +69,7 @@ AstrBot or other compatible OneBot-side workflow
 - [I Am Thinking](https://github.com/sssn-tech/astrbot_plugin_iamthinking) 适配能力已从核心桥接层剥离为本地插件 `rocketcat_plugin_adapt_iamthinking`。
 - `rocketcat_plugin_adapt_iamthinking` 现已支持把 `set_msg_emoji_like` 独立映射为 Rocket.Chat 贴表情与 typing 指示器，并允许分别开关。
 - 支持项目级单实例启动保护，阻止同一目录下重复拉起多份 RocketCatShell runtime。
-- 支持 `v0.1.4` 的性能优化路径：更紧凑的热存储、`orjson` JSON 快路径、媒体流式落盘、插件 action 索引分发，以及 WebUI 控制面缓存 / 日志长轮询。
+- 采用更紧凑的热存储、`orjson` JSON 快路径、媒体流式落盘、插件 action 索引分发，以及 WebUI 控制面缓存 / 日志长轮询。
 
 ---
 
@@ -255,7 +94,7 @@ AstrBot or other compatible OneBot-side workflow
 - `send_group_forward_msg`
 - `send_private_forward_msg`
 
-RocketCatShell 当前这一版明确不承诺合并转发消息语义。
+RocketCatShell 当前明确不承诺合并转发消息语义。
 
 ---
 
@@ -299,10 +138,12 @@ RocketCatShell 当前这一版明确不承诺合并转发消息语义。
 - 启动恢复阶段会记录 `snapshot_load_ms`、`journal_replay_ms` 和 `journal_records_replayed`，便于判断热存储恢复成本。
 - 入站 tracing 会拆分 `translate` 与 `emit_event` 两个阶段，并把 `room_lookup`、`mapping_alloc`、`room_bindings`、`mention_segments`、`quote_contexts`、`mention_metadata`、`media_segments`、`context_media`、`message_store`、`batch_commit` 等热路径阶段拆开记录。
 - `room_info_cache_ttl_seconds` 用于平衡房间元信息实时性与 REST 开销；默认值适合大多数稳定群组场景。
-
-- `v0.1.4` 以后，JSON 编解码优先走 `orjson`，Rocket.Chat / OneBot 连接复用更积极，普通远端媒体下载会直接流式写入临时文件，E2EE 媒体上传也会分块加密到临时密文文件后再上传。
-- WebUI 控制面增加插件目录签名缓存、server branding TTL 缓存和猫猫日志长轮询，降低空闲打开管理页面时的磁盘扫描、网络请求和 JSON 轮询开销。
-- 开发者源码工具 [tools/benchmark_inbound_translate.py](https://github.com/Creeper3222/RocketCat/blob/main/tools/benchmark_inbound_translate.py) 可用于本地构造文本 / 引用 / 线程 / 图片场景，对比 control 与 rebuild 两条入站翻译链路的延迟；该工具不包含在最小运行 ZIP 中。
+- “运行诊断”中的“性能与背压”默认折叠，展开后可查看事件循环延迟、日志队列，以及每个 Bot 的入站、OneBot action、Journal 和缓存指标；状态使用数字与文字共同表达。
+- Rocket.Chat 首次登录和重连由后台监督器负责，WebUI 健康接口不等待 Bot 上线；OneBot 上游离线时持续后台等待，不消耗 Rocket.Chat 重连次数。
+- 入站、OneBot action、Journal 和日志均使用固定容量队列。正常负载保持零丢失与同房间严格顺序；极端持续满载时入站只丢弃最新消息并精确计数、限频告警，OneBot action 会返回明确的忙碌响应。
+- JSON 编解码优先走 `orjson`；身份映射、媒体缓存和插件扫描复用 Shell 级共享资源；普通远端媒体使用内容寻址缓存，PBKDF2、RSA 与大文件 E2EE 加解密移至专用双 Worker 线程池。
+- 页面隐藏时，网络、诊断和日志轮询会暂停并取消在途请求；恢复可见后立即增量刷新。HTML 始终禁用缓存，带版本标记的静态资源使用长期 immutable 缓存。
+- 开发者可使用 `tools/benchmark_inbound_translate.py --control-root <基线目录> --rebuild-root . --profile realistic --repeat 5 --json-output data/perf/benchmark.json` 生成五轮入站对照基准；`tools/stress_v022_full_stack.py --output data/perf/soak.json` 执行隔离全链路压力测试。运行产物保存在已忽略的 `data/perf/`，两项源码工具均不进入最小运行 ZIP。
 
 ---
 
@@ -356,10 +197,24 @@ RocketCatShell 启动后会在本地启动一个独立 WebUI，默认监听 `127
 
 - `网络配置`：查看 Bot 状态、创建 / 编辑 / 删除 Bot。
 - `基础信息`：查看每个 Bot 的账号信息、OneBot self ID、Rocket.Chat 服务器品牌头像和服务器名称。
+- `运行诊断`：查看主机资源、Bot 运行状态、队列、缓存、快照、Journal 和 Rocket.Chat 服务端兼容信息。
 - `猫猫日志`：查看 RocketCatShell 与 `RocketCatPerf` 运行日志，可按级别和 `Perf` 开关过滤，并支持清空日志。
-- `基础设置`：管理 WebUI 登录认证 / 文件管理鉴权密码、WebUI 端口、消息映射窗口条数上限，以及配置导出 / 导入。
 - `插件管理`：管理 RocketCatShell 本地插件，包括启停、设置、重载和卸载。
 - `文件管理`：浏览 RocketCatShell 项目根目录内文件，支持目录进入 / 返回、UTF-8 文本查看与允许范围内的编辑保存、图片预览、上传、重命名、移动、删除和打包下载；敏感持久化数据文件需要再次输入 WebUI 登录认证 / 文件管理鉴权密码。
+- `系统终端`：创建、切换、排序和关闭本地终端会话，终端 WebSocket 复用 WebUI 登录认证。
+- `基础设置`：管理 WebUI 登录认证 / 文件管理鉴权密码、WebUI 端口、消息映射窗口条数上限、配置导出 / 导入和 Windows 版本管理。
+- `插件 Dashboard`：只为提供有效页面的插件显示入口，并在受限 iframe 中复用父 WebUI 的认证 Bridge；它由插件管理页动态进入，不占用固定侧栏入口。
+
+### 导航、移动端与键盘操作
+
+- 侧栏按“连接与状态 / 管理工具 / 系统”分组。桌面端可以独立记忆侧栏展开偏好；宽度不超过 `1120px` 时改为粘性顶栏和侧滑抽屉，移动抽屉每次打开 WebUI 时默认关闭。
+- 八个核心页面分别使用 `#network`、`#basic`、`#diagnostics`、`#logs`、`#plugins`、`#files`、`#terminal`、`#settings` 地址；刷新、浏览器前进和后退会恢复当前页面。插件 Dashboard 继续使用带插件与页面名称的独立 hash。
+- 移动抽屉支持菜单按钮、遮罩、`Escape` 和屏幕左侧 `20px` 边缘滑动打开，也可以拖动抽屉右缘关闭；打开期间会锁定背景滚动，手势完成后会把焦点交给当前导航项或菜单按钮。宽度不超过 `720px` 时，文件列表和 User 映射表会改为保留字段标签的卡片行，无需横向滚动。
+- 手机端允许通过顶部拖柄下滑关闭没有未保存内容的安全 Dialog；Bot、插件和文件编辑等可能包含未保存内容的 Dialog，以及更新阻塞层，不提供手势关闭。确认 Dialog 下滑等价于选择“取消”。
+- 全站提供可见键盘焦点。Dialog 使用浏览器原生模态语义并恢复触发器焦点；文件移动树支持方向键、`Home`、`End`、`Enter` 和空格。终端标签支持左右键、`Home`、`End` 和 `Alt+Shift+方向键` 即时调整顺序，也可以使用标签内的独立拖柄实时排序；普通标签区域仍可触摸横向滚动。
+- 网络配置、基础信息和运行诊断中的 Bot 卡片共享一套显示顺序，插件卡片使用独立顺序。拖动卡片的空白区域或头像等非文字表面即可实时换位；按钮、开关、链接和文字区域不会触发拖动，卡片文字仍可正常选择复制。键盘用户可先聚焦卡片，再按空格或回车选择，使用方向键、`Home`、`End` 调整，随后按空格或回车保存，按 `Escape` 取消。排序只改变 WebUI 展示，不改变 Bot 或插件的运行时启动顺序。
+- 状态通知最多同时显示三条，并可手动关闭或向任意水平方向滑走；错误会保留更长时间，鼠标悬停、键盘聚焦、拖动和页面转入后台时都会暂停剩余时间。
+- 系统分别尊重 `prefers-reduced-motion`、`prefers-reduced-transparency` 和 `prefers-contrast: more`：减弱动效时停用可选位移/弹簧手势但保留最长 `120ms` 的透明度和颜色反馈，降低透明度时改用近实色表面，高对比度模式会增强边框、焦点环和遮罩。
 
 ### WebUI 认证
 <p align="center">
@@ -369,6 +224,17 @@ RocketCatShell 启动后会在本地启动一个独立 WebUI，默认监听 `127
 - RocketCatShell 默认启用密码访问。
 - 初始 WebUI 登录认证 / 文件管理鉴权密码为 `123456`。
 - 后端提供登录、登出、Cookie 会话和受保护 API 访问控制。
+
+### Windows 版本管理
+
+- 版本管理固定读取 `Creeper3222/RocketCat` 的 GitHub Releases，普通进入页面使用 10 分钟缓存，手动刷新至少间隔 60 秒；检查更新不会自动下载或安装。
+- 可选版本按 SemVer 排序，目标高于当前版本时显示“升级”，低于当前版本时显示“回滚”，相同时显示“重装”。后端会直接排除所有 `< v0.2.2` 版本。
+- 切换版本前会完整下载并验证官方资产、GitHub SHA-256 和包内清单。只有验证完成后才会关闭当前 Shell，因此网络或包校验失败不会影响正在运行的版本。
+- 如果修改过 WebUI 端口但尚未重启生效，需先正常重启 RocketCatShell，确保配置端口与当前 loopback 健康端点一致后才能切换版本。
+- 更新只替换 RocketCatShell 核心、两个内置插件和发布清单声明的根运行文件。`config/`、`logs/`、Bot 数据、用户插件、插件数据、媒体缓存、数据库、快照、Journal 与 `.venv` 不会被删除或整体替换。
+- 更新期间浏览器会显示重启状态；目标版本通过本机健康检查后自动恢复页面。如果目标启动失败，助手会恢复原版本并在 WebUI 返回后报告自动回滚结果。
+- 如果事务进入 `recovery_required`，新的版本切换会被阻止；`launcher.bat` 会在下次启动时重试恢复，仍失败则停止启动，避免在不完整代码上继续运行。
+- 版本管理目前只支持 Windows Live；Docker/Linux 不支持此更新链路，两个内置插件随 RocketCatShell 整包更新，不提供独立插件更新渠道。
 - 会话失效时，前端会自动跳回登录页。
 - WebUI 登录认证 / 文件管理鉴权密码不允许设置为空。
 
@@ -376,8 +242,9 @@ RocketCatShell 启动后会在本地启动一个独立 WebUI，默认监听 `127
 
 - 导出默认文件名为 `rocketcat_config.json`。
 - 顶层判别字段为 `Is rocketcat config`。
-- 导出内容包含所有 Bot 设置（包括 `room_info_cache_ttl_seconds` 与 `perf_trace_enabled`）、WebUI 登录认证 / 文件管理鉴权密码、WebUI 端口、消息映射窗口条数上限和本地插件主配置。
-- 导入时会先校验判别字段；若不是 RocketCatShell 配置文件，则会返回失败提示。
+- 导出内容包含所有 Bot 设置（包括 `room_info_cache_ttl_seconds` 与 `perf_trace_enabled`）、WebUI 登录认证 / 文件管理鉴权密码、WebUI 端口、消息映射窗口条数上限、共享 Bot / 独立插件卡片顺序和规范化后的本地插件主配置。
+- 导入时会先校验判别字段、卡片顺序和已安装插件配置，再以事务方式统一写入。v0.2.1 等旧配置没有卡片顺序字段时会保留当前顺序，并按导入 Bot 顺序追加新实体；新格式中的已卸载实体会被忽略，遗漏实体会自动追加。
+- I Am Thinking 适配器的旧配置会自动补齐四组状态 ID 与工具 / 错误 shortcode；单组重复 ID 会按原顺序去重，非法整数或跨状态重复 ID 会在任何配置写入前明确报错。
 
 ---
 
@@ -408,10 +275,10 @@ RocketCatShell 当前已经拥有自己的本地插件系统，而不再只是�
 当前内置示例包括：
 
 - `rocketcat_plugin_built_in_command`：RocketCatShell 自有的内置指令系统插件。当前精确拦截 `#rocketcat` 与 `#system`，在本地直接回复，不再把命令正文继续交给上游；插件回复也会在入站侧抑制自回显再次上报。
-- `rocketcat_plugin_adapt_iamthinking`：用于接管 `set_msg_emoji_like`。除 reaction shortcode 映射外，现在还支持独立的 typing 指示器开关；bot 进入思考阶段时会触发 Rocket.Chat typing，应答结束时主动清除，长时间思考会自动续期心跳。
+- `rocketcat_plugin_adapt_iamthinking`：用于接管 `set_msg_emoji_like`。适配器通过可配置的上游数字 ID 数组识别思考、工具、错误、完成四态，再映射为 Rocket.Chat shortcode；思考和工具阶段维持 typing，错误和完成阶段主动清除，长时间处理仍会自动续期心跳。
 - 发布仓库默认仅跟踪 `rocketcat_plugin_built_in_command` 与 `rocketcat_plugin_adapt_iamthinking` 两个内置插件；其它位于 `data/plugins/` 的插件目录视为本地扩展，不随默认源码发布一并提交。
 
-### v0.2.1 插件生命周期
+### 插件生命周期
 
 | Hook | 作用域 | 用途 |
 |---|---|---|
@@ -611,16 +478,19 @@ http://127.0.0.1:5751/
 - 按需填写 E2EE 密钥密码
 - OneBot reverse WS 地址
 - OneBot Access Token
-- OneBot self_id
+
+OneBot `self_id` 不需要也不能手动填写；RocketCatShell 会根据 Rocket.Chat Bot 的不可变 `userId` 自动建立 `sha256-linear-v1` 映射。
 
 高级设置中还可以进一步设置：
 
-- 重连延迟
-- 最大连续重连次数
+- Rocket.Chat 重连延迟
+- Rocket.Chat 最大连续重连次数
 - 子频道会话隔离
 - 远端媒体上传 / 下载大小上限
 - 忽略机器人自己的消息
 - 调试日志
+
+这两项重连设置只约束 Rocket.Chat 聊天服务器侧。AstrBot 等 OneBot 上游未连接时，Bot 会继续保持启用，RocketCatShell 每 5 秒在后台尝试连接；首次进入等待状态和恢复连接时各记录一次信息日志，后续重复失败只写入调试日志。离线期间产生的新事件不会积压，也不会在恢复后作为过期事件补发。
 
 ### 4. 如需导入已有配置
 <p align="center">
@@ -649,13 +519,13 @@ http://127.0.0.1:5751/
 | `auto_open_browser` | 启动后是否自动打开浏览器。 |
 | `default_onebot_ws_url` | 新建 Bot 时使用的默认 OneBot reverse WS 地址。 |
 | `default_onebot_access_token` | 新建 Bot 时使用的默认 OneBot Access Token。 |
-| `default_reconnect_delay` | 默认重连延迟。 |
-| `default_max_reconnect_attempts` | 默认最大连续重连次数。 |
+| `default_reconnect_delay` | 默认 Rocket.Chat 重连延迟；不作用于 OneBot 上游。 |
+| `default_max_reconnect_attempts` | 默认 Rocket.Chat 最大连续重连次数；不作用于 OneBot 上游。 |
 | `default_enable_subchannel_session_isolation` | 默认是否开启子频道会话隔离。 |
 | `default_remote_media_max_size` | 默认远端媒体上传 / 下载大小上限。 |
 | `default_skip_own_messages` | 默认是否忽略机器人自己的消息。 |
 | `default_debug` | 默认是否开启调试日志。 |
-| `performance_profile` | 性能策略，v0.2.0 默认并仅提供 `balanced`。 |
+| `performance_profile` | 性能策略，当前仅提供 `balanced`。 |
 | `inbound_worker_count` | 入站 Worker 数量；`0` 按 CPU 自动选择 2 或 4。 |
 | `onebot_outgoing_queue_max_entries` | OneBot 出站队列上限，默认 `512`。 |
 | `identity_cache_max_entries` | 用户身份与 Rocket.Chat 用户缓存上限，默认 `4096`。 |
@@ -668,14 +538,14 @@ http://127.0.0.1:5751/
 
 #### 性能与资源（高级设置）
 
-WebUI 的“性能与资源（高级设置）”统一管理消息映射、入站并发、队列、缓存、日志和终端资源边界。普通部署保持默认值即可；设置会写入 `config/shell.json`，并随“导出配置”完整导出，导入旧配置时缺失字段会自动采用 v0.2.0 默认值。
+WebUI 的“性能与资源（高级设置）”统一管理消息映射、入站并发、队列、缓存、日志和终端资源边界。普通部署保持默认值即可；设置会写入 `config/shell.json`，并随“导出配置”完整导出，导入旧配置时缺失字段会自动采用当前安全默认值。
 
 | 设置项 | 详细行为 |
 |--------|----------|
-| 性能策略 | 对应 `performance_profile`。v0.2.0 仅提供 `balanced`，作为兼顾吞吐、响应速度和资源占用的稳定基线，预留给后续版本扩展其他策略。 |
+| 性能策略 | 对应 `performance_profile`。当前仅提供 `balanced`，作为兼顾吞吐、响应速度和资源占用的稳定基线，并为其他策略预留扩展位。 |
 | 入站 Worker | 对应 `inbound_worker_count`，允许 `0`～`8`。默认 `0` 表示自动选择：CPU 核心数不超过 4 时使用 2 个 Worker，否则使用 4 个；显式设置后按指定数量并发处理 Rocket.Chat 入站消息。保存后会协调重建受影响的 Bot runtime。 |
 | 最大消息映射窗口条数 | 对应 `message_index_max_entries`，代码默认值为 `1000`，已有配置继续保留用户当前值。该窗口保存 Rocket.Chat 消息 ID 与 OneBot 消息编号之间的近期映射；缩小窗口会立即按新上限整理热存储，达到编号重置阈值时会保留当前窗口并重新编号。窗口越大，历史 `get_msg` / 引用恢复范围越长，同时占用更多内存和快照空间。 |
-| OneBot 出站队列上限 | 对应 `onebot_outgoing_queue_max_entries`，允许 `1`～`100000`，默认 `512`。限制等待发送给 AstrBot 的事件数量；连接暂时中断时通过有界队列施加背压，重连后保持原顺序继续发送，避免无界积压耗尽内存。保存后会协调重建受影响的 Bot runtime。 |
+| OneBot 出站队列上限 | 对应 `onebot_outgoing_queue_max_entries`，允许 `1`～`100000`，默认 `512`。限制 OneBot 已连接时等待发送给 AstrBot 的实时事件数量；队列满或上游离线时，新事件会被丢弃并计入运行诊断，不会阻塞 Rocket.Chat 入站处理，也不会在重连后补发过期事件。保存后会协调重建受影响的 Bot runtime。 |
 | 身份缓存上限 | 对应 `identity_cache_max_entries`，允许 `128`～`1000000`，默认 `4096`。限制 Rocket.Chat 用户资料及 `sha256-linear-v1` 身份映射热缓存规模；同一服务器的多个 Bot 共享服务器级身份存储核心，超出上限后按最近使用顺序淘汰，SQLite 持久映射不会被删除。保存后会协调重建受影响的 Bot runtime。 |
 | 媒体缓存上限 | 对应 `media_cache_max_bytes`，允许 `1 MiB`～`1 TiB`，默认 `1 GiB`。限制项目级 `data/temp` 内容寻址缓存的总大小；清理器优先移除较旧且当前未发布的缓存文件，不影响正在通过令牌 HTTP URL 上报的媒体。保存后会协调重建受影响的 Bot runtime。 |
 | 媒体缓存保留时间 | 对应 `media_cache_max_age_hours`，允许 `1`～`87600` 小时，默认 `168` 小时（7 天）。媒体清理器在启动时及运行期间定期执行，同时受总量上限约束；用户仍可在停止相关操作后手动清理 `data/temp`。保存后会协调重建受影响的 Bot runtime。 |
@@ -702,8 +572,8 @@ WebUI 的“性能与资源（高级设置）”统一管理消息映射、入�
 | `onebot_ws_url` | OneBot reverse WebSocket 地址。 |
 | `onebot_access_token` | OneBot reverse WebSocket Token。 |
 | `OneBot self_id` | 不再由用户配置；根据 Rocket.Chat Bot 的不可变 userId 自动建立 `sha256-linear-v1` 映射。 |
-| `reconnect_delay` | 断线重连等待秒数。 |
-| `max_reconnect_attempts` | 最大重连次数；`0` 表示不限次数。 |
+| `reconnect_delay` | Rocket.Chat 断线重连等待秒数；OneBot 上游固定使用独立的 5 秒等待。 |
+| `max_reconnect_attempts` | Rocket.Chat 最大连续重连次数；`0` 表示不限次数。OneBot 上游始终持续等待，不受此项限制。 |
 | `enable_subchannel_session_isolation` | 是否按子频道隔离上下文。 |
 | `remote_media_max_size` | 当前 Bot 的远端媒体上传 / 下载大小上限。 |
 | `room_info_cache_ttl_seconds` | 房间信息缓存 TTL，单位秒，默认 `300`。 |
@@ -727,6 +597,8 @@ data/
 	bots/
 	plugins/
 	plugin_data/
+	temp/
+	update/
 
 logs/
 	rocketcat.log
@@ -737,6 +609,7 @@ logs/
 - `config/` 只保存配置和插件主配置。
 - `data/` 保存全局媒体临时缓存、本地插件本体、插件持久化数据和各 Bot 运行时数据。
 - `data/temp/` 保存所有 Bot 共用的解密媒体与临时下载文件；目录内容是可重建缓存，可以由用户手动查看和清理。
+- `data/update/` 保存 Windows 版本检查缓存、暂存包、事务记录和恢复备份；它是本机运行状态，不进入源码仓库或发布包。
 - `data/bots/<bot>/runtime.snapshot.bin` 保存最近一次热存储快照，覆盖 ID 映射、消息缓存、私聊房间映射和群上下文绑定。
 - `data/bots/<bot>/runtime.journal.bin` 保存快照之后的增量变更，用于启动恢复和窗口整理后的状态回放。
 - Bot 运行时仍然会按目录划分，但桥接热路径以内存态为准，不再依赖旧版逐文件在线更新模式。
@@ -750,7 +623,7 @@ logs/
 
 - 当前仍然围绕 OneBot v11 reverse WebSocket 工作，不是官方 Rocket.Chat 平台适配器。
 - Rocket.Chat 合并转发消息语义当前未定义，OneBot `get_forward_msg`、`send_group_forward_msg` 和 `send_private_forward_msg` 均未实现；多引用消息使用多个普通 `reply` 段表达，不等同于合并转发。
-- 系统事件、审计事件、编辑 / 撤回 / 已读等非消息类事件不在这一版的桥接承诺范围内。
+- 系统事件、审计事件、编辑 / 撤回 / 已读等非消息类事件不在当前桥接承诺范围内。
 - E2EE 仅覆盖 Rocket.Chat 加密私聊和加密私有群组。
 - 远端媒体如果下载失败、上传 / 下载超出大小限制或源地址不可用，相关媒体发送会失败或降级，并写入 error 日志。
 - `set_msg_emoji_like` 的扩展行为依赖本地插件；如果未安装对应插件，核心会返回未处理。

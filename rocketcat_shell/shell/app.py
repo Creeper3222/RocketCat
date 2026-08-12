@@ -7,7 +7,7 @@ import webbrowser
 from typing import Any
 
 from ..layout import ProjectLayout
-from ..logger import configure_logging, logger
+from ..logger import configure_logging, logger, shutdown_logging
 from ..models import DEFAULT_WEBUI_ACCESS_PASSWORD
 from ..settings import load_or_create_shell_settings
 from .instance_lock import ShellInstanceLock, SingleInstanceError
@@ -99,6 +99,7 @@ async def _run_async(args: argparse.Namespace) -> int:
         await webui.start()
         try:
             await manager.start_enabled_runtimes("webui ready")
+            webui.mark_application_ready()
             logger.info("[RocketCatShell] WebUI started at %s", webui.url)
 
             if settings.auto_open_browser and not args.no_browser:
@@ -113,5 +114,6 @@ async def _run_async(args: argparse.Namespace) -> int:
             await manager.shutdown()
     finally:
         instance_lock.release()
+        shutdown_logging(timeout=10.0)
 
     return 0
