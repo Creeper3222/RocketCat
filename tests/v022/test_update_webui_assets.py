@@ -73,6 +73,13 @@ class UpdateWebUiAssetTests(unittest.TestCase):
         self.assertIn("ROCKETCATSHELL_UPDATE_TRANSACTION", launcher)
         self.assertIn("Startup has been stopped to protect this installation", launcher)
 
+    def test_windows_pty_dependency_uses_python_314_wheel_line(self) -> None:
+        requirements = (ROOT / "requirements.txt").read_text(encoding="utf-8")
+        launcher = (ROOT / "launcher.bat").read_text(encoding="utf-8")
+        self.assertIn('pywinpty>=3.0.5,<4; platform_system == "Windows"', requirements)
+        self.assertNotIn("pywinpty>=2.0,<3", requirements)
+        self.assertIn("--only-binary=pywinpty", launcher)
+
 
 if __name__ == "__main__":
     unittest.main()

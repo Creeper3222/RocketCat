@@ -78,7 +78,7 @@ echo Checking Python dependencies from requirements.txt...
 set "CHECK_EXIT=%ERRORLEVEL%"
 if "%CHECK_EXIT%"=="1" (
     echo Missing or incompatible requirements.txt dependencies detected. Installing requirements automatically...
-    "%PYTHON_CMD%" -m pip install --disable-pip-version-check -r "%REQUIREMENTS_FILE%"
+    "%PYTHON_CMD%" -m pip install --disable-pip-version-check --only-binary=pywinpty -r "%REQUIREMENTS_FILE%"
     if errorlevel 1 (
         echo.
         echo Failed to install RocketCat Shell dependencies automatically.

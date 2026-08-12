@@ -11,8 +11,8 @@ orjson>=3.10,<4
 psutil>=6,<7
 # FastAPI UploadFile/form parsing.
 python-multipart>=0.0.9,<1
-# Interactive Windows terminal backend; subprocess fallback remains available.
-pywinpty>=2.0,<3; platform_system == "Windows"
+# Interactive Windows terminal backend; 3.x provides prebuilt wheels through CPython 3.14.
+pywinpty>=3.0.5,<4; platform_system == "Windows"
 # WebUI ASGI server.
 uvicorn>=0.23,<1
 # Uvicorn WebSocket backend for the WebUI terminal and realtime channels.

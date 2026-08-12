@@ -46,6 +46,7 @@ RocketCatShell 各版本的功能变更、兼容性调整、问题修复和迁�
 
 ### 修复
 
+- 修复首次启动器在系统默认 Python 为 3.13 / 3.14 时安装 `pywinpty 2.x` 没有可用 wheel、转而要求本机 Rust 与 Visual Studio C++ 工具链并最终失败的问题；Windows PTY 依赖升级为带 CPython 3.10–3.14 预编译 wheel 的 `pywinpty 3.0.5+`，自动安装同时禁止该依赖静默回退到源码构建。
 - 修复 OneBot 上游未连接也会消耗 Rocket.Chat 重连次数、连续失败后错误停用整个 Bot 的问题；两侧重连策略现已完全拆分，OneBot 以独立 5 秒间隔持续后台等待，重复失败仅写入调试日志，离线事件不积压或恢复后补发。
 - 修复启用页面 hash 路由后，系统终端 WebSocket 地址误携带 URL fragment、导致终端无法连接的问题。
 - 修复手机端日志自动滚动开关被旧定位规则裁出面板，以及 User 映射长 Bot 名和整块冲突色造成的可读性问题。
