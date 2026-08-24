@@ -48,11 +48,13 @@ SOURCE_ONLY_TOP_LEVEL_FILES = frozenset({".gitignore"})
 SOURCE_ONLY_TOOL_FILES = frozenset(
     {
         "tools/benchmark_inbound_translate.py",
+        "tools/benchmark_v023_hotpaths.py",
         "tools/build_v022_acceptance_report.py",
         "tools/build_windows_release.py",
         "tools/smoke_v022_readonly.py",
         "tools/stress_v020.py",
         "tools/stress_v022_full_stack.py",
+        "tools/validate_v023_update_compat.py",
     }
 )
 IGNORED_RELEASE_SOURCE_NAMES = frozenset(

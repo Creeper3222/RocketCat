@@ -9,6 +9,8 @@ tests/
 tests/*
 !tests/v022/
 !tests/v022/**
+!tests/v023/
+!tests/v023/**
 data/bots/
 data/temp/
 data/update/

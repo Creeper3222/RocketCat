@@ -1,6 +1,6 @@
 # RocketCatShell
 
-[![Platform](https://img.shields.io/badge/Platform-OneBot%20v11%20Reverse%20WS-pink)](#)
+[![Platform](https://img.shields.io/badge/Platform-OneBot%20v11%20Multi--Transport-pink)](#)
 [![Runtime](https://img.shields.io/badge/Python-%3E%3D3.11-blue)](#环境要求)
 
 将 [Rocket.Chat](https://rocket.chat) 通过桥接方式接入 OneBot v11 生态的独立客户端。它继承了插件版 [RocketCat](https://github.com/Creeper3222/astrbot_plugin_rocketchat_onebot_bridge) 已经验证过的桥接核心、独立 WebUI 和管理能力，但已经不再依附于 AstrBot 插件宿主，而是作为一个可以独立运行、独立配置、独立扩展的本地控制台存在。
@@ -11,7 +11,7 @@
 
 - RocketCatShell 自己拥有 `config/`、`data/`、`logs/` 目录边界。
 - RocketCatShell 自己提供本地 WebUI、登录认证、Bot 管理和插件管理。
-- RocketCatShell 仍然可以作为 OneBot reverse WebSocket 客户端与 AstrBot 协同，但不再依赖 AstrBot 插件宿主才能运行。
+- RocketCatShell 可以通过 HTTP、HTTP SSE 或 WebSocket 的客户端 / 服务器模式接入 OneBot v11 生态；与 AstrBot 协同时仍可直接使用默认的 Websocket 客户端模式。
 
 > 各版本的功能变更、兼容性调整、问题修复和迁移说明统一记录在 [CHANGELOG.md](CHANGELOG.md)。README 仅维护当前功能、配置与使用方式。
 
@@ -26,9 +26,11 @@ Rocket.Chat Server
 		v
 RocketCatShell
 		^
-		|  OneBot v11 Reverse WebSocket Client
+		|  OneBot v11
+		|  HTTP Server / HTTP Client / HTTP SSE Server
+		|  Websocket Server / Websocket Client
 		v
-OneBot v11 Consumer
+OneBot v11 Peer
 		^
 		|  plugins / providers / event pipeline
 		v
@@ -37,9 +39,9 @@ AstrBot or other compatible OneBot-side workflow
 
 声明：
 
-- RocketCatShell 当前仍然围绕 OneBot v11 reverse WebSocket 语义工作。
-- 目前已经适配 [AstrBot](https://github.com/AstrBotDevs/AstrBot)，其它onebot v11语义后续再考虑实现
-- 如果你的上游是 AstrBot，那么可以继续直接复用 AstrBot 自带的 aiocqhttp / OneBot v11 接入链路。
+- RocketCatShell 围绕 OneBot v11 语义工作，并提供 `HTTP服务器`、`HTTP客户端`、`HTTP SSE服务器`、`Websocket服务器`、`Websocket客户端` 五种互相独立的传输。
+- 目前已经适配 [AstrBot](https://github.com/AstrBotDevs/AstrBot)；其它 OneBot v11 实现可按各自支持的传输方式连接。
+- 如果对端是 AstrBot，可以继续直接复用 AstrBot 自带的 aiocqhttp / OneBot v11 接入链路，默认使用 `Websocket客户端` 即可。
 - RocketCatShell 当前不是一个通用的 Rocket.Chat 官方平台适配器，而是一套 OneBot 语义桥接器。
 
 ---
@@ -51,7 +53,7 @@ AstrBot or other compatible OneBot-side workflow
 - WebUI 默认启用登录门禁，初始密码为 `123456`。
 - 支持自定义 WebUI 端口，并在端口占用时自动回退到可用端口。
 - 支持配置导出 / 导入，统一打包 Bot 设置、WebUI 密码 / 端口、消息映射窗口条数上限、卡片顺序和本地插件主配置。
-- Rocket.Chat 连接支持可配置的重连延迟、最大连续重连次数限制及失败后自动停用；OneBot 上游采用独立的 5 秒后台等待，不会因为上游未启动而停用 Bot。
+- Rocket.Chat 连接支持可配置的重连延迟、最大连续重连次数限制及失败后自动停用；OneBot 传输拥有独立的监听、投递或重连生命周期，其失败不会消耗 Rocket.Chat 重连次数，也不会自动停用 Bot。
 - 支持动态订阅新房间，机器人被拉入新房间后无需重启。
 - 支持兼容 AstrBot 唤醒词 / 指令的入站消息格式，标准 `message` / `raw_message` 保持为纯当前用户正文。
 - 支持 OneBot 风格的群聊、私聊、消息查询、群成员查询、登录信息查询。
@@ -139,11 +141,13 @@ RocketCatShell 当前明确不承诺合并转发消息语义。
 - 入站 tracing 会拆分 `translate` 与 `emit_event` 两个阶段，并把 `room_lookup`、`mapping_alloc`、`room_bindings`、`mention_segments`、`quote_contexts`、`mention_metadata`、`media_segments`、`context_media`、`message_store`、`batch_commit` 等热路径阶段拆开记录。
 - `room_info_cache_ttl_seconds` 用于平衡房间元信息实时性与 REST 开销；默认值适合大多数稳定群组场景。
 - “运行诊断”中的“性能与背压”默认折叠，展开后可查看事件循环延迟、日志队列，以及每个 Bot 的入站、OneBot action、Journal 和缓存指标；状态使用数字与文字共同表达。
-- Rocket.Chat 首次登录和重连由后台监督器负责，WebUI 健康接口不等待 Bot 上线；OneBot 上游离线时持续后台等待，不消耗 Rocket.Chat 重连次数。
+- Rocket.Chat 首次登录和重连由后台监督器负责，WebUI 健康接口不等待 Bot 上线；OneBot 客户端重连、服务端监听和 HTTP 投递都由独立传输模块负责，不消耗 Rocket.Chat 重连次数。
 - 入站、OneBot action、Journal 和日志均使用固定容量队列。正常负载保持零丢失与同房间严格顺序；极端持续满载时入站只丢弃最新消息并精确计数、限频告警，OneBot action 会返回明确的忙碌响应。
 - JSON 编解码优先走 `orjson`；身份映射、媒体缓存和插件扫描复用 Shell 级共享资源；普通远端媒体使用内容寻址缓存，PBKDF2、RSA 与大文件 E2EE 加解密移至专用双 Worker 线程池。
+- OneBot action 与 Rocket.Chat 房间分片 Worker 会按需创建，并在连续空闲约 60 秒后回收到 0；运行诊断可用于确认空闲实例没有保留无用的消费 Task。OneBot Array 事件在多个 HTTP、SSE 或 WebSocket 接收方之间共享一次序列化结果，慢接收方由各自的有界队列隔离。
+- 系统终端按 16 KiB 或 16 ms 合并输出，并为每个 WebUI 客户端保留独立的有界发送队列；慢客户端会被断开，但重连后仍可从最多 200k 字符的近期历史恢复。目录下载使用临时 ZIP 流式返回，并在构建期间动态保留至少 256 MiB 可用磁盘空间。
 - 页面隐藏时，网络、诊断和日志轮询会暂停并取消在途请求；恢复可见后立即增量刷新。HTML 始终禁用缓存，带版本标记的静态资源使用长期 immutable 缓存。
-- 开发者可使用 `tools/benchmark_inbound_translate.py --control-root <基线目录> --rebuild-root . --profile realistic --repeat 5 --json-output data/perf/benchmark.json` 生成五轮入站对照基准；`tools/stress_v022_full_stack.py --output data/perf/soak.json` 执行隔离全链路压力测试。运行产物保存在已忽略的 `data/perf/`，两项源码工具均不进入最小运行 ZIP。
+- 开发者可使用 `tools/benchmark_inbound_translate.py --control-root <基线目录> --rebuild-root . --profile realistic --repeat 5 --json-output data/perf/benchmark.json` 生成五轮入站对照基准，使用 `tools/benchmark_v023_hotpaths.py --output data/perf/hotpaths.json` 检查 OneBot 扇出、房间路由和 compact 序列化热路径。`tools/stress_v022_full_stack.py --profile iterative-5m --duration-seconds 300 --post-idle-seconds 61 --output data/perf/iterative.json` 执行固定阶段的五分钟隔离全链路压力测试并验证 Worker 空闲回收；不传迭代参数时仍保留原有完整压力模式。运行产物保存在已忽略的 `data/perf/`，这些源码工具不进入最小运行 ZIP。
 
 ---
 
@@ -195,7 +199,7 @@ RocketCatShell 启动后会在本地启动一个独立 WebUI，默认监听 `127
 
 ### 页面能力
 
-- `网络配置`：查看 Bot 状态、创建 / 编辑 / 删除 Bot。
+- `网络配置`：按五种 OneBot 网络类型创建、筛选、查看、编辑和删除 Bot；类型在创建后固定，需要改用其它传输时应新建 Bot。
 - `基础信息`：查看每个 Bot 的账号信息、OneBot self ID、Rocket.Chat 服务器品牌头像和服务器名称。
 - `运行诊断`：查看主机资源、Bot 运行状态、队列、缓存、快照、Journal 和 Rocket.Chat 服务端兼容信息。
 - `猫猫日志`：查看 RocketCatShell 与 `RocketCatPerf` 运行日志，可按级别和 `Perf` 开关过滤，并支持清空日志。
@@ -334,7 +338,7 @@ class Plugin(RocketCatPlugin):
 | Python | `>= 3.11` |
 | 运行依赖 | `aiohttp`, `cryptography`, `fastapi`, `orjson`, `psutil`, `python-multipart`, `uvicorn`, `websockets`；其中 `websockets` 为 WebUI 系统终端和实时通道提供 Uvicorn WebSocket 后端，Windows 额外使用 `pywinpty` |
 | Rocket.Chat | 支持 `7.10.x–8.5.x`，需要可用的 REST API、DDP/WebSocket 订阅和 E2EE 接口（如使用加密功能） |
-| OneBot 上游 | 需要可用的 OneBot v11 reverse WebSocket 服务 |
+| OneBot 对端 | 需要支持所选 HTTP、SSE 或 WebSocket 模式的 OneBot v11 实现；纯 HTTP服务器 action 模式可以不建立事件订阅 |
 
 ---
 
@@ -421,13 +425,14 @@ RocketCatShell 在第一次安装、还没有保存过任何配置时，会自�
 - `logs/`
 - `config/shell.json`
 - `config/bots.json`
+- `config/onebot_transports.json`
 
 其中初始默认值包括：
 
 - WebUI 地址：`127.0.0.1:5751`
 - WebUI 初始密码：`123456`
 - 最大消息映射窗口条数：`1000`
-- shell 默认 OneBot reverse WS 地址：`ws://127.0.0.1:6199/ws/`
+- 默认 `Websocket客户端` 地址：`ws://127.0.0.1:6199/ws/`
 
 也就是说，只要依赖安装正确，RocketCatShell 在空配置状态下可以自己创建必需目录和初始配置文件。
 
@@ -435,9 +440,9 @@ RocketCatShell 在第一次安装、还没有保存过任何配置时，会自�
 
 ## 快速开始
 
-### 1. 准备 OneBot v11 reverse WebSocket 上游
+### 1. 准备 OneBot v11 对端
 
-如果你的上游是 [AstrBot](https://github.com/AstrBotDevs/AstrBot)，可以先在 AstrBot 中创建内置 OneBot v11 平台：
+如果对端是 [AstrBot](https://github.com/AstrBotDevs/AstrBot)，最直接的方式是在 AstrBot 中创建内置 OneBot v11 平台，并让 RocketCatShell 使用默认的 `Websocket客户端`：
 
 1. 打开 `机器人`
 2. 点击 `+ 创建机器人`
@@ -470,27 +475,41 @@ http://127.0.0.1:5751/
 <p align="center">
   <img src="https://github.com/user-attachments/assets/611a6601-0af6-4ebf-ac3c-e301a03631eb" width="100%" />
 </p>
-在 `网络配置` 页点击 `新建 Bot`，为该 Bot 填写：
+在 `网络配置` 页点击 `新建`，先选择一种 OneBot 网络类型，再填写：
 
 - Rocket.Chat 服务器地址
 - Rocket.Chat 用户名
 - Rocket.Chat 密码
 - 按需填写 E2EE 密钥密码
-- OneBot reverse WS 地址
-- OneBot Access Token
+- 所选传输的 Host / Port 或 URL
+- 所选传输的消息格式、Token、心跳、重连及其它可用选项
 
 OneBot `self_id` 不需要也不能手动填写；RocketCatShell 会根据 Rocket.Chat Bot 的不可变 `userId` 自动建立 `sha256-linear-v1` 映射。
 
-高级设置中还可以进一步设置：
+通用高级设置中还可以进一步设置：
 
 - Rocket.Chat 重连延迟
 - Rocket.Chat 最大连续重连次数
 - 子频道会话隔离
 - 远端媒体上传 / 下载大小上限
-- 忽略机器人自己的消息
-- 调试日志
 
-这两项重连设置只约束 Rocket.Chat 聊天服务器侧。AstrBot 等 OneBot 上游未连接时，Bot 会继续保持启用，RocketCatShell 每 5 秒在后台尝试连接；首次进入等待状态和恢复连接时各记录一次信息日志，后续重复失败只写入调试日志。离线期间产生的新事件不会积压，也不会在恢复后作为过期事件补发。
+“上报自身消息”和“调试日志”属于 OneBot 传输设置，仅在对应类型提供时显示。
+
+Rocket.Chat 的两项重连设置只约束聊天服务器侧。`Websocket客户端` 默认每 5 秒独立尝试连接；服务端监听失败、HTTP 客户端投递失败或其它 OneBot 对端不可用时，Bot 同样保持启用并通过状态与诊断报告问题，不会消耗 Rocket.Chat 重连次数。客户端离线期间产生的新事件不会积压，也不会在恢复后补发为过期事件。
+
+### 五种 OneBot 网络类型
+
+每个 Bot 只绑定一种网络类型，创建后不能直接切换类型。五类传输共享同一套 OneBot action、消息编解码和有界队列基础设施，但各自拥有独立的启动、停止、监听、投递、心跳与诊断生命周期。
+
+| 类型 | RocketCat 角色与端点 | 主要配置 |
+|------|----------------------|----------|
+| `HTTP服务器` | 监听 OneBot HTTP action API；纯 HTTP 模式不主动推送事件，可选同端口 WebSocket。 | Host、Port、CORS、WebSocket、Array / String、Token。 |
+| `HTTP客户端` | 把事件 POST 到目标 URL，携带 `X-Self-ID`；配置 Token 时附加 `X-Signature: sha1=...`。 | URL、自身消息、Array / String、HMAC Token。 |
+| `HTTP SSE服务器` | 提供 HTTP action API，并在 `/_events` 提供按连接有序的 SSE 事件流；可选同端口 WebSocket。 | Host、Port、CORS、WebSocket、自身消息、格式、Token。 |
+| `Websocket服务器` | 监听 WebSocket；`/api` 只处理 action，其它路径同时接收 action 和事件。事件连接会收到生命周期与可选心跳。 | Host、Port、自身消息、格式、心跳、Token。 |
+| `Websocket客户端` | 主动连接 OneBot WebSocket 对端，接收 action 并推送事件；断线后按自身间隔持续等待。 | URL、自身消息、格式、重连、心跳、Token。 |
+
+服务端 Token 同时接受 `Authorization: Bearer <token>` 和 `access_token` query。HTTP 客户端响应中的 `reply` 会复用现有 `send_msg` 链路执行；删除、踢人、禁言、审批等 RocketCatShell 尚未实现的快速操作只记录明确的 `1404`，不会被推测执行。`Array` 直接传输 OneBot segment 数组，`String` 使用带正确转义的 CQ 码。
 
 ### 4. 如需导入已有配置
 <p align="center">
@@ -517,8 +536,8 @@ OneBot `self_id` 不需要也不能手动填写；RocketCatShell 会根据 Rocke
 | `message_index_max_entries` | 最大消息映射窗口条数，默认 `1000`；超出后会清理最早映射，并在达到重置阈值后自动重排当前窗口。 |
 | `log_level` | 日志级别，默认 `INFO`。 |
 | `auto_open_browser` | 启动后是否自动打开浏览器。 |
-| `default_onebot_ws_url` | 新建 Bot 时使用的默认 OneBot reverse WS 地址。 |
-| `default_onebot_access_token` | 新建 Bot 时使用的默认 OneBot Access Token。 |
+| `default_onebot_ws_url` | 新建 `Websocket客户端` 时使用的默认 URL；保留该字段以兼容 v0.2.1 / v0.2.2。 |
+| `default_onebot_access_token` | 新建 `Websocket客户端` 时使用的默认 Token；其它服务端 / HTTP 类型会生成独立的随机 16 位 Token。 |
 | `default_reconnect_delay` | 默认 Rocket.Chat 重连延迟；不作用于 OneBot 上游。 |
 | `default_max_reconnect_attempts` | 默认 Rocket.Chat 最大连续重连次数；不作用于 OneBot 上游。 |
 | `default_enable_subchannel_session_isolation` | 默认是否开启子频道会话隔离。 |
@@ -543,9 +562,9 @@ WebUI 的“性能与资源（高级设置）”统一管理消息映射、入�
 | 设置项 | 详细行为 |
 |--------|----------|
 | 性能策略 | 对应 `performance_profile`。当前仅提供 `balanced`，作为兼顾吞吐、响应速度和资源占用的稳定基线，并为其他策略预留扩展位。 |
-| 入站 Worker | 对应 `inbound_worker_count`，允许 `0`～`8`。默认 `0` 表示自动选择：CPU 核心数不超过 4 时使用 2 个 Worker，否则使用 4 个；显式设置后按指定数量并发处理 Rocket.Chat 入站消息。保存后会协调重建受影响的 Bot runtime。 |
+| 入站 Worker | 对应 `inbound_worker_count`，允许 `0`～`8`。默认 `0` 表示自动选择：CPU 核心数不超过 4 时最多使用 2 个 Worker，否则最多使用 4 个；显式设置后作为最大并发数。Worker 按房间分片流量惰性创建并在空闲约 60 秒后回收，同时保持同房间严格顺序。保存后会协调重建受影响的 Bot runtime。 |
 | 最大消息映射窗口条数 | 对应 `message_index_max_entries`，代码默认值为 `1000`，已有配置继续保留用户当前值。该窗口保存 Rocket.Chat 消息 ID 与 OneBot 消息编号之间的近期映射；缩小窗口会立即按新上限整理热存储，达到编号重置阈值时会保留当前窗口并重新编号。窗口越大，历史 `get_msg` / 引用恢复范围越长，同时占用更多内存和快照空间。 |
-| OneBot 出站队列上限 | 对应 `onebot_outgoing_queue_max_entries`，允许 `1`～`100000`，默认 `512`。限制 OneBot 已连接时等待发送给 AstrBot 的实时事件数量；队列满或上游离线时，新事件会被丢弃并计入运行诊断，不会阻塞 Rocket.Chat 入站处理，也不会在重连后补发过期事件。保存后会协调重建受影响的 Bot runtime。 |
+| OneBot 出站队列上限 | 对应 `onebot_outgoing_queue_max_entries`，允许 `1`～`100000`，默认 `512`。限制各 OneBot 客户端或事件订阅者等待发送的实时事件数量；队列满或对端不可用时，新事件会被丢弃并计入运行诊断，不会阻塞 Rocket.Chat 入站处理，也不会在恢复后补发过期事件。保存后会协调重建受影响的 Bot runtime。 |
 | 身份缓存上限 | 对应 `identity_cache_max_entries`，允许 `128`～`1000000`，默认 `4096`。限制 Rocket.Chat 用户资料及 `sha256-linear-v1` 身份映射热缓存规模；同一服务器的多个 Bot 共享服务器级身份存储核心，超出上限后按最近使用顺序淘汰，SQLite 持久映射不会被删除。保存后会协调重建受影响的 Bot runtime。 |
 | 媒体缓存上限 | 对应 `media_cache_max_bytes`，允许 `1 MiB`～`1 TiB`，默认 `1 GiB`。限制项目级 `data/temp` 内容寻址缓存的总大小；清理器优先移除较旧且当前未发布的缓存文件，不影响正在通过令牌 HTTP URL 上报的媒体。保存后会协调重建受影响的 Bot runtime。 |
 | 媒体缓存保留时间 | 对应 `media_cache_max_age_hours`，允许 `1`～`87600` 小时，默认 `168` 小时（7 天）。媒体清理器在启动时及运行期间定期执行，同时受总量上限约束；用户仍可在停止相关操作后手动清理 `data/temp`。保存后会协调重建受影响的 Bot runtime。 |
@@ -556,9 +575,25 @@ WebUI 的“性能与资源（高级设置）”统一管理消息映射、入�
 
 保存高级设置时，消息映射窗口会立即整理；入站 Worker、OneBot 队列和身份/媒体缓存边界会触发增量 runtime reconciliation；日志与 WebUI 终端边界则在下次完整启动 Shell 后生效。配置导入会校验同样的取值范围，导出结果会保留全部高级设置，避免迁移环境后悄悄回落到默认值。
 
-### 单个 Bot 配置
+### 单个 Bot 与 OneBot 传输配置
 
-`config/bots.json` 中每个 Bot 主要包含：
+`config/bots.json` 保存 Rocket.Chat Bot 主记录与旧版兼容投影；`config/onebot_transports.json` 以 Bot ID 保存格式版本为 `1` 的规范化 OneBot tagged union：
+
+```json
+{
+  "format_version": 1,
+  "transports": {
+    "bot_id": {
+      "type": "websocket-client",
+      "settings": {}
+    }
+  }
+}
+```
+
+v0.2.1 / v0.2.2 的平面 `onebot_ws_url`、Token、`skip_own_messages` 和 Debug 会自动迁移为 `Websocket客户端`，并补齐 Array 格式、5000ms 重连与 30000ms 心跳。回退 v0.2.2 后仍可使用旧界面修改 WebSocket URL、Token、Debug 与自身消息开关；再次升级时这些旧版修改会覆盖对应共享字段，而 v0.2.3 专属的消息格式、重连和心跳设置继续从独立传输配置恢复。非 WebSocket 客户端会在 `bots.json` 写入不可连接的安全占位地址，防止回退旧版时误连默认上游；独立传输配置不会被旧版改写。
+
+Bot 主记录主要包含：
 
 | 配置项 | 说明 |
 |--------|------|
@@ -569,11 +604,12 @@ WebUI 的“性能与资源（高级设置）”统一管理消息映射、入�
 | `username` | Rocket.Chat 用户名。 |
 | `password` | Rocket.Chat 密码。 |
 | `e2ee_password` | E2EE 私钥密码。 |
-| `onebot_ws_url` | OneBot reverse WebSocket 地址。 |
-| `onebot_access_token` | OneBot reverse WebSocket Token。 |
+| `onebot_ws_url` | `Websocket客户端` 的兼容 URL 投影；其它类型写入不可连接的安全占位值。 |
+| `onebot_access_token` | `Websocket客户端` 的兼容 Token 投影。 |
+| `onebot_transport` | API 与配置导出使用的规范化 `{type, settings}`；类型创建后不可修改。 |
 | `OneBot self_id` | 不再由用户配置；根据 Rocket.Chat Bot 的不可变 userId 自动建立 `sha256-linear-v1` 映射。 |
-| `reconnect_delay` | Rocket.Chat 断线重连等待秒数；OneBot 上游固定使用独立的 5 秒等待。 |
-| `max_reconnect_attempts` | Rocket.Chat 最大连续重连次数；`0` 表示不限次数。OneBot 上游始终持续等待，不受此项限制。 |
+| `reconnect_delay` | Rocket.Chat 断线重连等待秒数；不控制任何 OneBot 传输。 |
+| `max_reconnect_attempts` | Rocket.Chat 最大连续重连次数；`0` 表示不限次数，不控制任何 OneBot 传输。 |
 | `enable_subchannel_session_isolation` | 是否按子频道隔离上下文。 |
 | `remote_media_max_size` | 当前 Bot 的远端媒体上传 / 下载大小上限。 |
 | `room_info_cache_ttl_seconds` | 房间信息缓存 TTL，单位秒，默认 `300`。 |
@@ -591,6 +627,7 @@ RocketCatShell 当前的正式目录语义如下：
 config/
 	shell.json
 	bots.json
+	onebot_transports.json
 	plugins_config/
 
 data/
@@ -621,7 +658,8 @@ logs/
 
 ## 已知限制
 
-- 当前仍然围绕 OneBot v11 reverse WebSocket 工作，不是官方 Rocket.Chat 平台适配器。
+- 当前提供五种 OneBot v11 网络传输，但仍是 OneBot 语义桥接器，不是 Rocket.Chat 官方平台适配器。
+- HTTP 客户端快速操作当前只执行 `reply`；撤回、踢人、禁言、审批等尚未映射到 Rocket.Chat，收到时会以 `1404` 记录为未实现。
 - Rocket.Chat 合并转发消息语义当前未定义，OneBot `get_forward_msg`、`send_group_forward_msg` 和 `send_private_forward_msg` 均未实现；多引用消息使用多个普通 `reply` 段表达，不等同于合并转发。
 - 系统事件、审计事件、编辑 / 撤回 / 已读等非消息类事件不在当前桥接承诺范围内。
 - E2EE 仅覆盖 Rocket.Chat 加密私聊和加密私有群组。
