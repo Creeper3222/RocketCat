@@ -163,22 +163,24 @@ class UpdateDiscoveryTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(payload["releases"], [])
         request.assert_not_called()
 
-    async def test_status_and_actions_include_reinstall_without_old_releases(self) -> None:
+    async def test_status_and_actions_follow_v024_current_version(self) -> None:
         with mock.patch.object(
             UpdateService,
             "_request_json",
             return_value=[
-                github_release("v0.2.4"),
+                github_release("v0.2.5"),
                 github_release("v0.2.3"),
                 github_release("v0.2.2"),
             ],
         ):
             status = await self.service.status()
         self.assertTrue(status["update_available"])
+        self.assertEqual("v0.2.5", status["latest_tag"])
         self.assertEqual(status["minimum_compatible_tag"], "v0.2.2")
         self.assertEqual(self.service.action_for_tag("v0.2.2"), "rollback")
-        self.assertEqual(self.service.action_for_tag("v0.2.3"), "reinstall")
-        self.assertEqual(self.service.action_for_tag("v0.2.4"), "update")
+        self.assertEqual(self.service.action_for_tag("v0.2.3"), "rollback")
+        self.assertEqual(self.service.action_for_tag("v0.2.4"), "reinstall")
+        self.assertEqual(self.service.action_for_tag("v0.2.5"), "update")
 
 
 class UpdateTransactionMetadataTests(unittest.TestCase):

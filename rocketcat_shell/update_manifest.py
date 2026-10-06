@@ -224,7 +224,15 @@ def _relative_files(root: Path) -> Iterable[Path]:
         base = root / Path(directory)
         if not base.is_dir():
             raise UpdatePackageError(f"missing managed directory: {directory}")
-        yield from (path for path in base.rglob("*") if path.is_file())
+        for path in base.rglob("*"):
+            if not path.is_file():
+                continue
+            relative_path = path.relative_to(root)
+            if any(part in IGNORED_RELEASE_SOURCE_NAMES for part in relative_path.parts):
+                continue
+            if path.suffix.casefold() in IGNORED_RELEASE_SOURCE_SUFFIXES:
+                continue
+            yield path
     for relative in MANAGED_FILES:
         path = root / Path(relative)
         if not path.is_file():

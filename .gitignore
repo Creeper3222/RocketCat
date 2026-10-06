@@ -11,6 +11,8 @@ tests/*
 !tests/v022/**
 !tests/v023/
 !tests/v023/**
+!tests/v024/
+!tests/v024/**
 data/bots/
 data/temp/
 data/update/

@@ -82,6 +82,9 @@ AstrBot or other compatible OneBot-side workflow
 - `send_group_msg`
 - `send_private_msg`
 - `send_msg`
+- `send_group_forward_msg`
+- `send_private_forward_msg`
+- `send_forward_msg`
 - `get_msg`
 - `get_group_info`
 - `get_group_member_info`
@@ -93,10 +96,8 @@ AstrBot or other compatible OneBot-side workflow
 ### 当前不支持的 OneBot 动作
 
 - `get_forward_msg`
-- `send_group_forward_msg`
-- `send_private_forward_msg`
 
-RocketCatShell 当前明确不承诺合并转发消息语义。
+合并转发发送支持顺序发送或打包到 Rocket.Chat 讨论串；OneBot `get_forward_msg` 回读仍不支持。
 
 ---
 
@@ -511,6 +512,16 @@ Rocket.Chat 的两项重连设置只约束聊天服务器侧。`Websocket客户�
 
 服务端 Token 同时接受 `Authorization: Bearer <token>` 和 `access_token` query。HTTP 客户端响应中的 `reply` 会复用现有 `send_msg` 链路执行；删除、踢人、禁言、审批等 RocketCatShell 尚未实现的快速操作只记录明确的 `1404`，不会被推测执行。`Array` 直接传输 OneBot segment 数组，`String` 使用带正确转义的 CQ 码。
 
+### 合并转发消息
+
+`Websocket客户端` 支持 AstrBot 的 `send_group_forward_msg` 与 `send_private_forward_msg`，也接受 NapCat 的通用 `send_forward_msg`。其它传输类型共用同一 action 处理层。节点按输入顺序展开；嵌套 `Nodes`、已有消息引用以及文本/CQ、图片、文件、语音、视频、回复和提及会复用现有发送链路。Rocket.Chat 中每项作为普通消息发送，不添加节点发送者或时间前缀。普通 `send_group_msg`、`send_private_msg` 和 `send_msg` 收到纯 node 列表时也使用相同处理流程；普通消息与 node 混合会明确报错。
+
+WebSocket 客户端高级设置中的“是否将合并转发消息转为线程回复”默认关闭。关闭时按顺序逐条发送；开启时在目标房间主时间线创建标题“合并转发消息(查看x条转发消息)”，并将正文依次发送到该标题的 Rocket.Chat 讨论串。`x` 统计上游最外层节点数；嵌套节点仍按顺序展开。若原会话已在 Rocket.Chat 线程中，新转发会在相同房间主时间线建立自己的线程。
+
+两种模式均返回最后一条正文的真实 `message_id`，可用 `get_msg` 查询；线程头也保留消息映射。无效节点、未知引用、线程不可用或发送失败会停止后续发送并报告阶段与进度，已发送的消息映射会保留，不会自动重试整批。线程正文中的媒体发送失败不会降级为普通提示文字。
+
+Rocket.Chat 不提供 OneBot 合并转发资源，因此本版不生成虚构的 `forward_id` / `res_id`，`get_forward_msg` 仍不支持。开关值随注册表保存，并完整覆盖配置导入 / 导出；旧配置缺少此字段时默认为关闭。
+
 ### 4. 如需导入已有配置
 <p align="center">
   <img src="https://github.com/user-attachments/assets/ba61315c-9273-4f30-a6a0-ac55a19297f1" width="100%" />
@@ -660,7 +671,7 @@ logs/
 
 - 当前提供五种 OneBot v11 网络传输，但仍是 OneBot 语义桥接器，不是 Rocket.Chat 官方平台适配器。
 - HTTP 客户端快速操作当前只执行 `reply`；撤回、踢人、禁言、审批等尚未映射到 Rocket.Chat，收到时会以 `1404` 记录为未实现。
-- Rocket.Chat 合并转发消息语义当前未定义，OneBot `get_forward_msg`、`send_group_forward_msg` 和 `send_private_forward_msg` 均未实现；多引用消息使用多个普通 `reply` 段表达，不等同于合并转发。
+- OneBot `get_forward_msg` 仍不支持；多引用消息使用多个普通 `reply` 段表达，不等同于合并转发。
 - 系统事件、审计事件、编辑 / 撤回 / 已读等非消息类事件不在当前桥接承诺范围内。
 - E2EE 仅覆盖 Rocket.Chat 加密私聊和加密私有群组。
 - 远端媒体如果下载失败、上传 / 下载超出大小限制或源地址不可用，相关媒体发送会失败或降级，并写入 error 日志。

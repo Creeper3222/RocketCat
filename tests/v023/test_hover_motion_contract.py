@@ -22,12 +22,12 @@ class HoverMotionContractTests(unittest.TestCase):
         cls.login = (STATIC_ROOT / "login.html").read_text(encoding="utf-8")
         cls.javascript = (STATIC_ROOT / "app.js").read_text(encoding="utf-8")
 
-    def test_v023_metadata_is_synchronized(self) -> None:
-        self.assertEqual("v0.2.3", __version__)
+    def test_v024_metadata_is_synchronized(self) -> None:
+        self.assertEqual("v0.2.4", __version__)
         self.assertEqual("v0.2.2", MIN_UPDATE_TAG)
-        self.assertIn('<span id="sidebarVersion">v0.2.3</span>', self.index)
-        self.assertIn("# RocketCatShell v0.2.3 runtime dependencies.", (ROOT / "requirements.txt").read_text(encoding="utf-8"))
-        self.assertIn("version: v0.2.3", (ROOT / "data/plugins/rocketcat_plugin_built_in_command/metadata.yaml").read_text(encoding="utf-8"))
+        self.assertIn('<span id="sidebarVersion">v0.2.4</span>', self.index)
+        self.assertIn("# RocketCatShell v0.2.4 runtime dependencies.", (ROOT / "requirements.txt").read_text(encoding="utf-8"))
+        self.assertIn("version: v0.2.4", (ROOT / "data/plugins/rocketcat_plugin_built_in_command/metadata.yaml").read_text(encoding="utf-8"))
 
         markers = [
             re.search(r"styles\.css\?v=([^\"']+)", self.index),
@@ -35,15 +35,16 @@ class HoverMotionContractTests(unittest.TestCase):
             re.search(r"app\.js\?v=([^\"']+)", self.index),
         ]
         self.assertTrue(all(markers))
-        self.assertEqual({"20260824v023perf1"}, {match.group(1) for match in markers if match})
+        self.assertEqual({"20261006v024release1"}, {match.group(1) for match in markers if match})
 
-    def test_update_actions_follow_v023_current_version(self) -> None:
-        with tempfile.TemporaryDirectory(prefix="rocketcat-v023-update-actions-") as temporary_directory:
+    def test_update_actions_follow_v024_current_version(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="rocketcat-v024-update-actions-") as temporary_directory:
             root = Path(temporary_directory)
             service = UpdateService(root, root)
             self.assertEqual("rollback", service.action_for_tag("v0.2.2"))
-            self.assertEqual("reinstall", service.action_for_tag("v0.2.3"))
-            self.assertEqual("update", service.action_for_tag("v0.2.4"))
+            self.assertEqual("rollback", service.action_for_tag("v0.2.3"))
+            self.assertEqual("reinstall", service.action_for_tag("v0.2.4"))
+            self.assertEqual("update", service.action_for_tag("v0.2.5"))
 
     def test_hover_feedback_uses_existing_motion_tokens(self) -> None:
         self.assertIn("window.addEventListener('pointermove', () => setInputModality('pointer')", self.javascript)
