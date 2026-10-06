@@ -966,10 +966,16 @@ class CompatibilityHarness:
         active_bot_id = bot_ids["Compat Active"]
         async with await self.session() as session:
             item = await self.bot_from_api(session, active_bot_id)
+        transport = item.get("onebot_transport")
+        transport_type = str(
+            item.get("onebot_transport_type")
+            or (transport.get("type") if isinstance(transport, dict) else "")
+            or ""
+        )
         checks = {
             "target_health": self._target_health_payload.get("version") == self.target_tag,
             "bot_enabled": item.get("enabled") is True,
-            "websocket_client": item.get("onebot_transport_type") == "websocket-client",
+            "websocket_client": transport_type == "websocket-client",
             "thread_setting_default": item.get("forward_messages_to_thread") is False,
             "identity_mapping": int(item.get("onebot_self_id") or 0) == self._source_onebot_self_id,
         }
