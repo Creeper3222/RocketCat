@@ -534,6 +534,27 @@ class CompatibilityHarness:
                 )
             return body
 
+    async def bot_from_api(
+        self,
+        session: aiohttp.ClientSession,
+        bot_id: str,
+    ) -> dict[str, Any]:
+        # v0.2.2 has no GET /api/bots/{id}; use the list route shared by all
+        # releases in this compatibility matrix.
+        payload = await self.api(session, "GET", "/api/bots")
+        item = next(
+            (
+                candidate
+                for candidate in payload.get("items") or []
+                if str(candidate.get("id") or candidate.get("bot_id") or "")
+                == bot_id
+            ),
+            None,
+        )
+        if item is None:
+            raise RuntimeError(f"Bot {bot_id} is missing from GET /api/bots")
+        return item
+
     async def create_legacy_bots(self) -> dict[str, str]:
         if self._require_install_root().joinpath(
             "config", "onebot_transports.json"
@@ -659,12 +680,7 @@ class CompatibilityHarness:
     async def _record_source_persistence(self, active_bot_id: str) -> None:
         root = self._require_install_root()
         async with await self.session() as session:
-            response = await self.api(
-                session,
-                "GET",
-                f"/api/bots/{active_bot_id}",
-            )
-        item = response.get("item") or {}
+            item = await self.bot_from_api(session, active_bot_id)
         if int(item.get("onebot_self_id") or 0) <= 0:
             raise RuntimeError("source runtime did not establish its persistent identity mapping")
         self._source_onebot_self_id = int(item["onebot_self_id"])
@@ -949,8 +965,7 @@ class CompatibilityHarness:
     async def assert_target_runtime_and_persistence(self, bot_ids: dict[str, str]) -> None:
         active_bot_id = bot_ids["Compat Active"]
         async with await self.session() as session:
-            response = await self.api(session, "GET", f"/api/bots/{active_bot_id}")
-        item = response.get("item") or {}
+            item = await self.bot_from_api(session, active_bot_id)
         checks = {
             "target_health": self._target_health_payload.get("version") == self.target_tag,
             "bot_enabled": item.get("enabled") is True,
