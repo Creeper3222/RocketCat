@@ -362,6 +362,8 @@ class ShellWebUI:
         self._update_switch_lock = asyncio.Lock()
         self._configuration_transaction_lock = asyncio.Lock()
         self._update_shutdown_task: asyncio.Task[Any] | None = None
+        self._shutdown_requested = False
+        self._active_update_requests: set[asyncio.Task[Any]] = set()
         self._application_ready = False
         self._app = FastAPI(title="RocketCat Shell", version=__version__)
         self._app.add_middleware(_WebUICacheAuthMiddleware, owner=self)
@@ -439,6 +441,11 @@ class ShellWebUI:
         self._app.add_api_route("/api/basic-info/avatar", self._handle_basic_info_avatar, methods=["GET"])
         self._app.add_api_route("/api/settings", self._handle_settings, methods=["GET"])
         self._app.add_api_route("/api/settings", self._handle_update_settings, methods=["PUT"])
+        self._app.add_api_route(
+            "/api/settings/shutdown",
+            self._handle_shutdown,
+            methods=["POST"],
+        )
         self._app.add_api_route(
             "/api/settings/card-order",
             self._handle_card_order,
@@ -590,6 +597,7 @@ class ShellWebUI:
                 log_level="warning",
                 loop="asyncio",
                 lifespan="on",
+                timeout_graceful_shutdown=10.0,
             )
             self._server = uvicorn.Server(config)
             self._server_task = asyncio.create_task(
@@ -1675,13 +1683,21 @@ class ShellWebUI:
         self,
         refresh: bool = Query(default=False),
     ) -> dict[str, Any]:
-        return await self.manager.updates.status(refresh=refresh)
+        if self._shutdown_requested:
+            raise HTTPException(status_code=503, detail="RocketCatShell 正在关闭")
+        return await self._run_update_request(
+            self.manager.updates.status(refresh=refresh)
+        )
 
     async def _handle_update_releases(
         self,
         refresh: bool = Query(default=False),
     ) -> dict[str, Any]:
-        payload = await self.manager.updates.releases(refresh=refresh)
+        if self._shutdown_requested:
+            raise HTTPException(status_code=503, detail="RocketCatShell 正在关闭")
+        payload = await self._run_update_request(
+            self.manager.updates.releases(refresh=refresh)
+        )
         releases = []
         for release in payload.get("releases") or []:
             asset = release.get("asset") or {}
@@ -1711,6 +1727,21 @@ class ShellWebUI:
             "releases": releases,
         }
 
+    async def _run_update_request(self, awaitable: Any) -> Any:
+        task = asyncio.current_task()
+        if task is not None:
+            self._active_update_requests.add(task)
+        try:
+            return await awaitable
+        except asyncio.CancelledError:
+            if not self._shutdown_requested:
+                raise
+            logger.debug("[RocketCatShell] update discovery request ended during shutdown")
+            raise HTTPException(status_code=503, detail="RocketCatShell 正在关闭") from None
+        finally:
+            if task is not None:
+                self._active_update_requests.discard(task)
+
     async def _handle_update_transaction(
         self,
         transaction_id: str,
@@ -1729,11 +1760,19 @@ class ShellWebUI:
             raise HTTPException(status_code=409, detail="目标版本不能为空")
         if not self._application_ready:
             raise HTTPException(status_code=409, detail="RocketCatShell 尚未完成启动")
-        if self._update_switch_lock.locked() or self._update_shutdown_task is not None:
+        if (
+            self._shutdown_requested
+            or self._update_switch_lock.locked()
+            or self._update_shutdown_task is not None
+        ):
             raise HTTPException(status_code=409, detail="已有版本切换或重启事务正在进行")
 
         async with self._configuration_transaction_lock:
-            if self._update_shutdown_task is not None or self.manager.updates.active_transaction():
+            if (
+                self._shutdown_requested
+                or self._update_shutdown_task is not None
+                or self.manager.updates.active_transaction()
+            ):
                 raise HTTPException(status_code=409, detail="已有版本切换或重启事务正在进行")
             configured_port = int(getattr(self.manager.settings, "webui_port", 0) or 0)
             if configured_port != self.port:
@@ -1883,6 +1922,46 @@ class ShellWebUI:
 
     async def _handle_settings(self) -> dict[str, Any]:
         return await self.manager.get_settings_state()
+
+    async def _handle_shutdown(self) -> JSONResponse:
+        if not self._application_ready:
+            raise HTTPException(status_code=409, detail="RocketCatShell 尚未完成启动")
+
+        async with self._configuration_transaction_lock:
+            if self._shutdown_requested:
+                raise HTTPException(status_code=409, detail="RocketCatShell 正在关闭")
+            if (
+                self._update_switch_lock.locked()
+                or self._update_shutdown_task is not None
+                or self.manager.updates.active_transaction()
+            ):
+                raise HTTPException(status_code=409, detail="版本切换期间不能关闭 RocketCatShell")
+
+            self._shutdown_requested = True
+            logger.warning("[RocketCatShell] WebUI requested process shutdown")
+            return JSONResponse(
+                status_code=202,
+                content={"shutdown_in_progress": True},
+                background=BackgroundTask(self._request_process_shutdown),
+            )
+
+    async def _request_process_shutdown(self) -> None:
+        # Starlette runs response background tasks only after sending the full
+        # response body. Keep a short grace period so the browser can consume
+        # it and move to about:blank before Uvicorn starts draining.
+        await asyncio.sleep(0.35)
+        current_task = asyncio.current_task()
+        update_requests = [
+            task
+            for task in self._active_update_requests
+            if task is not current_task and not task.done()
+        ]
+        for task in update_requests:
+            task.cancel()
+        if update_requests:
+            await asyncio.gather(*update_requests, return_exceptions=True)
+        logger.info("[RocketCatShell] process shutdown accepted; stopping Shell runtime")
+        self.manager.request_stop()
 
     async def _handle_card_order(self) -> dict[str, list[str]]:
         return await self.manager.get_card_order_state()

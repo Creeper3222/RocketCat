@@ -435,6 +435,7 @@ const elements = {
   settingsPortResult: document.getElementById('settingsPortResult'),
   settingsPerformanceResult: document.getElementById('settingsPerformanceResult'),
   settingsConfigResult: document.getElementById('settingsConfigResult'),
+  settingsShutdownResult: document.getElementById('settingsShutdownResult'),
   updateCurrentVersion: document.getElementById('updateCurrentVersion'),
   updateLatestVersion: document.getElementById('updateLatestVersion'),
   updateCheckedAt: document.getElementById('updateCheckedAt'),
@@ -558,6 +559,7 @@ const elements = {
   settingsPerformanceSaveButton: document.getElementById('settingsPerformanceSaveButton'),
   settingsExportConfigButton: document.getElementById('settingsExportConfigButton'),
   settingsImportConfigButton: document.getElementById('settingsImportConfigButton'),
+  settingsShutdownButton: document.getElementById('settingsShutdownButton'),
   settingsImportFileInput: document.getElementById('settingsImportFileInput'),
   updateReleaseModal: document.getElementById('updateReleaseModal'),
   updateReleaseList: document.getElementById('updateReleaseList'),
@@ -7964,6 +7966,36 @@ async function rebuildMessageIndexes() {
   showToast(summarizeMessageIndexResult(payload.result), 'success');
 }
 
+function closeWebUiWindow() {
+  window.close();
+  // Browsers refuse to close tabs that were not opened by script. Replacing
+  // the document with a blank page removes the now-offline WebUI from view.
+  window.setTimeout(() => {
+    if (!window.closed) {
+      window.location.replace('about:blank');
+    }
+  }, 120);
+}
+
+async function shutdownShellProcess() {
+  const confirmed = await askForConfirmation({
+    title: '关闭 RocketCatShell？',
+    message: '这会停止所有 Bot、插件和 WebUI，并结束当前 RocketCatShell 进程；进程不会自动重新启动。',
+    confirmLabel: '关闭进程',
+    kind: 'danger',
+  });
+  if (!confirmed) {
+    return;
+  }
+
+  setFormResult(elements.settingsShutdownResult, '正在优雅关闭 RocketCatShell…', '');
+  const payload = await requestJson('/api/settings/shutdown', { method: 'POST' });
+  if (!payload?.shutdown_in_progress) {
+    throw new Error('RocketCatShell 未确认关闭请求');
+  }
+  closeWebUiWindow();
+}
+
 async function exportShellConfiguration() {
   const fileName = 'rocketcat_config.json';
   const handle = typeof window.showSaveFilePicker === 'function'
@@ -9084,6 +9116,14 @@ elements.settingsPerformanceSaveButton?.addEventListener('click', async () => {
   } catch (error) {
     setFormResult(elements.settingsPerformanceResult, error.message || '性能与资源设置保存失败', 'error');
     showToast(error.message || '性能与资源设置保存失败', 'error');
+  }
+});
+elements.settingsShutdownButton?.addEventListener('click', async () => {
+  try {
+    await runBusy(elements.settingsShutdownButton, '关闭中…', shutdownShellProcess);
+  } catch (error) {
+    setFormResult(elements.settingsShutdownResult, error.message || '关闭 RocketCatShell 失败', 'error');
+    showToast(error.message || '关闭 RocketCatShell 失败', 'error');
   }
 });
 elements.settingsExportConfigButton?.addEventListener('click', async () => {

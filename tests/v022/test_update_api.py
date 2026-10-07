@@ -9,6 +9,8 @@ import urllib.request
 from pathlib import Path
 from types import SimpleNamespace
 
+from fastapi import HTTPException
+
 from rocketcat_shell import __version__
 from rocketcat_shell.shell.webui import ShellWebUI
 from rocketcat_shell.shell.manager import CardOrderConflictError
@@ -280,6 +282,20 @@ class UpdateApiTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(status, 409)
         self.assertIn("incompatible", payload["detail"])
 
+        await self.webui._configuration_transaction_lock.acquire()
+        pending_switch = asyncio.create_task(
+            self.webui._handle_update_switch({"tag_name": "v0.2.3-rc.1"})
+        )
+        await asyncio.sleep(0)
+        self.webui._shutdown_requested = True
+        self.webui._configuration_transaction_lock.release()
+        try:
+            with self.assertRaises(HTTPException) as shutdown_conflict:
+                await pending_switch
+            self.assertIn("版本切换或重启事务", shutdown_conflict.exception.detail)
+        finally:
+            self.webui._shutdown_requested = False
+
         status, transaction, _ = await self._request(
             "/api/updates/switch",
             method="POST",
@@ -304,6 +320,66 @@ class UpdateApiTests(unittest.IsolatedAsyncioTestCase):
         await task
         self.assertIsNone(self.webui._update_shutdown_task)
         self.assertEqual(self.manager.stop_requests, 0)
+
+    async def test_shutdown_requires_auth_readiness_and_no_active_update(self) -> None:
+        status, _, _ = await self._request(
+            "/api/settings/shutdown",
+            method="POST",
+        )
+        self.assertEqual(status, 401)
+
+        cookie = await self._login()
+        self.webui._application_ready = False
+        status, payload, _ = await self._request(
+            "/api/settings/shutdown",
+            method="POST",
+            cookie=cookie,
+        )
+        self.assertEqual(status, 409)
+        self.assertIn("尚未完成启动", payload["detail"])
+
+        self.webui.mark_application_ready()
+        self.manager.updates.active = {"transaction_id": "a" * 24}
+        status, payload, _ = await self._request(
+            "/api/settings/shutdown",
+            method="POST",
+            cookie=cookie,
+        )
+        self.assertEqual(status, 409)
+        self.assertIn("版本切换期间", payload["detail"])
+        self.assertEqual(self.manager.stop_requests, 0)
+        self.manager.updates.active = None
+
+    async def test_webui_graceful_shutdown_wait_is_bounded(self) -> None:
+        self.assertIsNotNone(self.webui._server)
+        self.assertEqual(
+            10.0,
+            self.webui._server.config.timeout_graceful_shutdown,
+        )
+
+    async def test_shutdown_requests_graceful_stop_once(self) -> None:
+        cookie = await self._login()
+        status, payload, _ = await self._request(
+            "/api/settings/shutdown",
+            method="POST",
+            cookie=cookie,
+        )
+        self.assertEqual(status, 202)
+        self.assertEqual(payload, {"shutdown_in_progress": True})
+
+        deadline = asyncio.get_running_loop().time() + 3.0
+        while self.manager.stop_requests == 0 and asyncio.get_running_loop().time() < deadline:
+            await asyncio.sleep(0.02)
+        self.assertEqual(self.manager.stop_requests, 1)
+
+        status, payload, _ = await self._request(
+            "/api/settings/shutdown",
+            method="POST",
+            cookie=cookie,
+        )
+        self.assertEqual(status, 409)
+        self.assertIn("正在关闭", payload["detail"])
+        self.assertEqual(self.manager.stop_requests, 1)
 
 
 if __name__ == "__main__":

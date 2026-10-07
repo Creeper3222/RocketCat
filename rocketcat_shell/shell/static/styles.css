@@ -1855,6 +1855,11 @@ body.card-order-drag-active iframe {
   margin-top: 18px;
 }
 
+.form-section.settings-shutdown-section {
+  border-color: color-mix(in srgb, var(--danger) 36%, var(--border));
+  background: color-mix(in srgb, var(--danger) 4%, var(--surface));
+}
+
 .performance-backpressure-panel {
   margin: var(--space-5) 0;
   border: 1px solid color-mix(in srgb, var(--border) 72%, transparent);

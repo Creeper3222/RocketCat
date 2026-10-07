@@ -4,7 +4,7 @@ RocketCatShell 各版本的功能变更、兼容性调整、问题修复和迁�
 
 后续开发先在“未发布”下记录，发布时再归入对应版本。
 
-## v0.2.4（合并转发逐条发送与线程回复）
+## v0.2.4（合并转发与 Windows 进程关闭）
 
 ### OneBot 消息兼容
 
@@ -15,6 +15,11 @@ RocketCatShell 各版本的功能变更、兼容性调整、问题修复和迁�
 - 两种模式都保留已发送消息映射并返回最后一条正文的真实 OneBot `message_id`；无效内容、线程不可用或发送失败会停止后续发送并报告阶段与进度。
 - 猫猫日志正文颜色与等级标签一致，便于区分 INFO、WARN、ERROR 和 DEBUG 消息；WebUI 样式与界面脚本使用 v0.2.4 静态资源版本键，避免浏览器复用旧缓存。
 - 源码对照记录：本机 AstrBot 4.28.0、NapCat local checkout（`package.json` 版本 `0.0.1`）的 Node 结构、转发 action 和消息发送入口，对照 Rocket.Chat 官方 8.5.0（tag commit `d0230e1ed86163b5cf9da57fda09fa86ea0b5c9f`；归档 `https://codeload.github.com/RocketChat/Rocket.Chat/zip/refs/tags/8.5.0`；SHA-256 `71caf60ce60dab12cce6b94746749d91c547673ca6ff387552cb575f2a5c5809`）。线程正文通过 Rocket.Chat `tmid` 关联线程头，媒体使用媒体确认链路；由服务端线程 hook 更新线程元数据。
+
+### Windows WebUI 与进程生命周期
+
+- 设置页新增“关闭进程”操作。用户确认后，RocketCatShell 优雅停止 Bot、插件和 WebUI，释放实例锁并退出当前进程；浏览器关闭当前窗口，无法关闭时显示空白页。进程不会自动重新启动。
+- 修复关闭期间更新状态或版本列表仍在等待 GitHub，导致 Uvicorn 取消请求并输出 ASGI 异常、同步网络线程拖延退出的问题。关停会收尾在途更新查询，阻塞式发现请求不再占用 asyncio 默认线程池。
 
 ## v0.2.3（五类 OneBot 传输、双向兼容与性能优化）
 

@@ -665,6 +665,15 @@
                   accept=".json,application/json"
                 />
               </section>
+
+              <section class="form-section settings-shutdown-section">
+                <h3>关闭 RocketCatShell</h3>
+                <p class="settings-helper">关闭当前 RocketCatShell 进程及其所有 Bot、插件和 WebUI。进程不会自动重新启动。</p>
+                <div class="settings-actions">
+                  <button id="settingsShutdownButton" class="action-button danger-button" type="button">关闭进程</button>
+                </div>
+                <p id="settingsShutdownResult" class="form-result" role="status" aria-live="polite"></p>
+              </section>
             </form>
           </section>
         </section>
@@ -1416,6 +1425,6 @@
 
     <script src="/static/vendor/xterm/xterm.js?v=20260615diagicons1"></script>
     <script src="/static/vendor/xterm/addon-fit.js?v=20260615diagicons1"></script>
-    <script src="/static/app.js?v=20261006v024release1"></script>
+    <script src="/static/app.js?v=sha256-6b9d69766c2cb4ce"></script>
   </body>
 </html>
